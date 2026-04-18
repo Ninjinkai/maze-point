@@ -44,19 +44,19 @@ static func generate(width: int, height: int, seed: int) -> Dictionary:
 
 		var dir_index := options[rng.randi_range(0, options.size() - 1)]
 		var next_cell: Vector2i = current + DIRS[dir_index]
-
-		cells[current.y][current.x] |= DIR_BITS[dir_index]
-		cells[next_cell.y][next_cell.x] |= OPPOSITE_BITS[dir_index]
+		_add_connection(cells, current, dir_index)
 		visited[next_cell.y][next_cell.x] = 1
 		visited_count += 1
 		stack.append(next_cell)
+
+	_add_extra_connections(cells, width, height, rng)
 
 	var start_sweep: Dictionary = _find_farthest(cells, width, height, Vector2i.ZERO)
 	var start: Vector2i = start_sweep["cell"]
 	var goal_sweep: Dictionary = _find_farthest(cells, width, height, start)
 	var goal: Vector2i = goal_sweep["cell"]
-	var goal_bfs: Dictionary = _bfs(cells, width, height, goal)
-	var solution_path: Array[Vector2i] = _reconstruct_path(goal_sweep["previous"], start, goal)
+	var start_bfs: Dictionary = _bfs(cells, width, height, start)
+	var solution_path: Array[Vector2i] = _reconstruct_path(start_bfs["previous"], start, goal)
 
 	return {
 		"cells": cells,
@@ -64,7 +64,6 @@ static func generate(width: int, height: int, seed: int) -> Dictionary:
 		"goal": goal,
 		"solution_path": solution_path,
 		"solution_length": max(solution_path.size() - 1, 0),
-		"goal_previous": goal_bfs["previous"],
 	}
 
 
@@ -88,6 +87,57 @@ static func has_connection(cells: Array[PackedInt32Array], cell: Vector2i, direc
 	if dir_index == -1:
 		return false
 	return (cells[cell.y][cell.x] & DIR_BITS[dir_index]) != 0
+
+
+static func _add_extra_connections(cells: Array[PackedInt32Array], width: int, height: int, rng: RandomNumberGenerator) -> void:
+	var candidates := _build_connection_candidates(cells, width, height)
+	var extra_connections: int = mini(_count_extra_connections(width, height), candidates.size())
+
+	for _unused in range(extra_connections):
+		if candidates.is_empty():
+			return
+
+		var index: int = rng.randi_range(0, candidates.size() - 1)
+		var candidate: Dictionary = candidates[index]
+		candidates.remove_at(index)
+
+		var cell: Vector2i = candidate["cell"]
+		var dir_index: int = candidate["dir_index"]
+		_add_connection(cells, cell, dir_index)
+
+
+static func _build_connection_candidates(cells: Array[PackedInt32Array], width: int, height: int) -> Array[Dictionary]:
+	var candidates: Array[Dictionary] = []
+
+	for y in range(height):
+		for x in range(width):
+			var cell := Vector2i(x, y)
+
+			for dir_index in [0, 1]:
+				var neighbor: Vector2i = cell + DIRS[dir_index]
+				if not _is_inside(neighbor, width, height):
+					continue
+				if has_connection(cells, cell, DIRS[dir_index]):
+					continue
+
+				candidates.append({
+					"cell": cell,
+					"dir_index": dir_index,
+				})
+
+	return candidates
+
+
+static func _count_extra_connections(width: int, height: int) -> int:
+	var area := width * height
+	var ratio := clampf(0.03 + float(width + height) / 180.0, 0.05, 0.14)
+	return max(1, int(round(float(area) * ratio)))
+
+
+static func _add_connection(cells: Array[PackedInt32Array], cell: Vector2i, dir_index: int) -> void:
+	var next_cell: Vector2i = cell + DIRS[dir_index]
+	cells[cell.y][cell.x] |= DIR_BITS[dir_index]
+	cells[next_cell.y][next_cell.x] |= OPPOSITE_BITS[dir_index]
 
 
 static func _find_farthest(cells: Array[PackedInt32Array], width: int, height: int, start: Vector2i) -> Dictionary:

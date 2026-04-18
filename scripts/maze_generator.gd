@@ -4,6 +4,7 @@ class_name MazeGenerator
 const DIRS := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const DIR_BITS := [1, 2, 4, 8]
 const OPPOSITE_BITS := [4, 8, 1, 2]
+const BONUS_VALUE := 5
 
 
 static func generate(width: int, height: int, seed: int, difficulty_scale: float = 1.0) -> Dictionary:
@@ -58,6 +59,7 @@ static func generate(width: int, height: int, seed: int, difficulty_scale: float
 	var start_bfs: Dictionary = _bfs(cells, width, height, start)
 	var goal_bfs: Dictionary = _bfs(cells, width, height, goal)
 	var solution_path: Array[Vector2i] = _reconstruct_path(start_bfs["previous"], start, goal)
+	var route_bonus_steps: Array[int] = _build_route_bonus_steps(max(solution_path.size() - 1, 0))
 	var bonuses: Array[Dictionary] = _build_bonuses(
 		cells,
 		width,
@@ -67,7 +69,8 @@ static func generate(width: int, height: int, seed: int, difficulty_scale: float
 		solution_path,
 		start_bfs["distances"],
 		goal_bfs["distances"],
-		difficulty_scale
+		difficulty_scale,
+		rng
 	)
 
 	return {
@@ -157,7 +160,8 @@ static func _build_bonuses(
 	solution_path: Array[Vector2i],
 	start_distances: Dictionary,
 	goal_distances: Dictionary,
-	difficulty_scale: float
+	difficulty_scale: float,
+	rng: RandomNumberGenerator
 ) -> Array[Dictionary]:
 	var bonuses: Array[Dictionary] = []
 	var bonus_cells: Array[Vector2i] = []
@@ -166,24 +170,38 @@ static func _build_bonuses(
 	if optimal_length <= 0:
 		return bonuses
 
-	var route_steps: Array[int] = _build_route_bonus_steps(optimal_length)
-	var remaining_route_value: int = optimal_length
-	var remaining_slots: int = route_steps.size()
+	var route_penalty_count: int = clampi(int(floor(float(optimal_length) / 18.0 + maxf(difficulty_scale - 1.0, 0.0) * 0.6)), 0, 3)
+	var route_negative_steps: Array[int] = _pick_path_steps(
+		optimal_length,
+		clampi(int(ceili(float(optimal_length + route_penalty_count * BONUS_VALUE) / float(BONUS_VALUE))), 1, optimal_length - 1),
+		rng
+	)
+	var used_route_steps: Dictionary = {}
+	for step_index in route_negative_steps:
+		used_route_steps[step_index] = true
 
-	for step_index in route_steps:
+	for step_index in route_negative_steps:
 		var bonus_cell: Vector2i = solution_path[step_index]
-		var bonus_value: int = maxi(1, int(round(float(remaining_route_value) / float(remaining_slots))))
-		var max_allowed: int = remaining_route_value - (remaining_slots - 1)
-		bonus_value = mini(bonus_value, max_allowed)
 		bonuses.append({
 			"cell": bonus_cell,
-			"value": bonus_value,
+			"value": -BONUS_VALUE,
 		})
 		bonus_cells.append(bonus_cell)
-		remaining_route_value -= bonus_value
-		remaining_slots -= 1
 
-	var detour_candidates: Array[Dictionary] = []
+	var route_positive_steps: Array[int] = _pick_path_steps(optimal_length, route_penalty_count, rng, used_route_steps)
+	for step_index in route_positive_steps:
+		var penalty_cell: Vector2i = solution_path[step_index]
+		bonuses.append({
+			"cell": penalty_cell,
+			"value": BONUS_VALUE,
+		})
+		bonus_cells.append(penalty_cell)
+
+	var detour_gain_candidates: Array[Dictionary] = []
+	var detour_loss_candidates: Array[Dictionary] = []
+	var path_lookup: Dictionary = {}
+	for path_cell in solution_path:
+		path_lookup[path_cell] = true
 
 	for y in range(height):
 		for x in range(width):
@@ -195,24 +213,30 @@ static func _build_bonuses(
 				continue
 
 			var detour_cost: int = int(start_distances[cell]) + int(goal_distances[cell]) - optimal_length
-			if detour_cost < 2:
+			if detour_cost < 1:
 				continue
 
-			detour_candidates.append({
+			var candidate: Dictionary = {
 				"cell": cell,
-				"value": detour_cost,
 				"detour": detour_cost,
-			})
+			}
+			if not path_lookup.has(cell) and detour_cost <= BONUS_VALUE + 1:
+				detour_loss_candidates.append(candidate)
+			if not path_lookup.has(cell):
+				detour_gain_candidates.append(candidate)
 
-	detour_candidates.sort_custom(
+	detour_loss_candidates.sort_custom(
+		func(a: Dictionary, b: Dictionary) -> bool:
+			return int(a["detour"]) < int(b["detour"])
+	)
+	detour_gain_candidates.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
 			return int(a["detour"]) > int(b["detour"])
 	)
 
-	var detour_limit: int = mini(detour_candidates.size(), maxi(1, int(round((difficulty_scale - 1.0) * 5.0)) + int(round(float(optimal_length) / 8.0))))
-
-	for candidate_variant in detour_candidates:
-		if detour_limit <= 0:
+	var detour_loss_limit: int = mini(detour_loss_candidates.size(), clampi(route_penalty_count + int(round(maxf(difficulty_scale - 1.0, 0.0))), 1, 4))
+	for candidate_variant in detour_loss_candidates:
+		if detour_loss_limit <= 0:
 			break
 
 		var candidate: Dictionary = candidate_variant
@@ -220,9 +244,29 @@ static func _build_bonuses(
 		if not _is_bonus_far_enough(cell, bonus_cells):
 			continue
 
-		bonuses.append(candidate)
+		bonuses.append({
+			"cell": cell,
+			"value": -BONUS_VALUE,
+		})
 		bonus_cells.append(cell)
-		detour_limit -= 1
+		detour_loss_limit -= 1
+
+	var detour_gain_limit: int = mini(detour_gain_candidates.size(), maxi(2, int(round(float(route_negative_steps.size()) * 0.7)) + int(round(maxf(difficulty_scale - 1.0, 0.0) * 2.0))))
+	for candidate_variant in detour_gain_candidates:
+		if detour_gain_limit <= 0:
+			break
+
+		var candidate: Dictionary = candidate_variant
+		var cell: Vector2i = candidate["cell"]
+		if not _is_bonus_far_enough(cell, bonus_cells):
+			continue
+
+		bonuses.append({
+			"cell": cell,
+			"value": BONUS_VALUE,
+		})
+		bonus_cells.append(cell)
+		detour_gain_limit -= 1
 
 	return bonuses
 
@@ -233,7 +277,7 @@ static func _build_route_bonus_steps(optimal_length: int) -> Array[int]:
 		return steps
 
 	var last_bonus_step: int = optimal_length - 1
-	var placement_count: int = clampi(int(round(float(optimal_length) / 4.0)), 1, last_bonus_step)
+	var placement_count: int = clampi(int(ceili(float(optimal_length) / float(BONUS_VALUE))), 1, last_bonus_step)
 	var previous_step: int = 0
 
 	for placement_index in range(placement_count):
@@ -244,6 +288,44 @@ static func _build_route_bonus_steps(optimal_length: int) -> Array[int]:
 		previous_step = step_index
 
 	return steps
+
+
+static func _pick_path_steps(optimal_length: int, count: int, rng: RandomNumberGenerator, excluded_steps: Dictionary = {}) -> Array[int]:
+	var candidates: Array[int] = []
+	for step_index in range(1, optimal_length):
+		if excluded_steps.has(step_index):
+			continue
+		candidates.append(step_index)
+
+	for index in range(candidates.size() - 1, 0, -1):
+		var swap_index: int = rng.randi_range(0, index)
+		var temp: int = candidates[index]
+		candidates[index] = candidates[swap_index]
+		candidates[swap_index] = temp
+
+	var selected: Array[int] = []
+	for step_index in candidates:
+		var is_far_enough: bool = true
+		for existing_step in selected:
+			if absi(step_index - existing_step) < 2:
+				is_far_enough = false
+				break
+		if not is_far_enough:
+			continue
+		selected.append(step_index)
+		if selected.size() >= count:
+			selected.sort()
+			return selected
+
+	for step_index in candidates:
+		if selected.has(step_index):
+			continue
+		selected.append(step_index)
+		if selected.size() >= count:
+			break
+
+	selected.sort()
+	return selected
 
 
 static func _is_bonus_far_enough(cell: Vector2i, existing_bonus_cells: Array[Vector2i]) -> bool:

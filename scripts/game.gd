@@ -5,7 +5,7 @@ const BRIGHT_TEXT_COLOR := Color("f7fbff")
 const DARK_TEXT_COLOR := Color("102030")
 const DARK_OUTLINE_COLOR := Color("09111d")
 const LIGHT_OUTLINE_COLOR := Color("eef4ff")
-const MARKER_INTRO_DURATION := 0.5
+const MARKER_INTRO_DURATION := 3.0
 const MARKER_INTRO_START_SCALE := 4.0
 const MOVE_ANIMATION_DURATION := 0.14
 const GOAL_CLEAR_DURATION := 0.32
@@ -24,6 +24,7 @@ const ACTION_INVERT := "maze_invert"
 enum SplashMode {
 	NONE,
 	LEVEL_COMPLETE,
+	LEVEL_FAILED,
 	RUN_COMPLETE,
 }
 
@@ -58,6 +59,9 @@ var run_levels_cleared: int = 0
 var splash_mode: SplashMode = SplashMode.NONE
 var last_viewport_size: Vector2 = Vector2.ZERO
 var invert_colors_enabled: bool = false
+var menu_focus_index: int = -1
+var player_skill_rating: float = 0.0
+var current_level_difficulty_scale: float = 1.0
 
 var level_bonus_values: Dictionary = {}
 var collected_bonus_cells: Dictionary = {}
@@ -72,8 +76,8 @@ var playfield_trim_color: Color = Color("466283")
 var wall_color: Color = Color("4d6685")
 var node_color: Color = Color("d8e4f4")
 var goal_color: Color = Color("ffcc66")
-var bonus_color: Color = Color("5fd08c")
-var bonus_inner_color: Color = Color("f8fff4")
+var bonus_gain_color: Color = Color("ff6f61")
+var bonus_loss_color: Color = Color("5fd08c")
 var player_color: Color = Color("73d2ff")
 var player_core_color: Color = Color("f7fbff")
 var panel_color: Color = Color("203147")
@@ -128,7 +132,15 @@ func _process(delta: float) -> void:
 	if splash_mode == SplashMode.NONE and not completed:
 		if _is_marker_intro_active():
 			marker_intro_elapsed = minf(marker_intro_elapsed + delta, MARKER_INTRO_DURATION)
-		elif _is_move_animation_active():
+		else:
+			level_elapsed_time += delta
+			if not pending_goal_completion and not _is_goal_clear_active() and level_elapsed_time >= float(par_time_seconds):
+				_fail_level_timeout()
+		if splash_mode != SplashMode.NONE or completed:
+			_update_ui()
+			queue_redraw()
+			return
+		if _is_move_animation_active():
 			move_animation_elapsed = minf(move_animation_elapsed + delta, MOVE_ANIMATION_DURATION)
 			if not _is_move_animation_active() and pending_goal_completion:
 				goal_clear_elapsed = 0.0
@@ -137,8 +149,6 @@ func _process(delta: float) -> void:
 			goal_clear_elapsed = minf(goal_clear_elapsed + delta, GOAL_CLEAR_DURATION)
 			if not _is_goal_clear_active():
 				_finish_level_complete()
-		else:
-			level_elapsed_time += delta
 		_update_ui()
 	queue_redraw()
 
@@ -148,15 +158,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		if splash_mode == SplashMode.NONE and _has_active_animation():
 			_skip_active_animations()
 			return
-		if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE:
-			_handle_splash_action()
+		if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED:
+			_activate_focused_menu_button()
 		return
 
-	if event.is_action_pressed(ACTION_RETRY) and splash_mode == SplashMode.LEVEL_COMPLETE:
+	if event.is_action_pressed(ACTION_RETRY) and (splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED):
 		_handle_splash_retry()
 		return
 
-	if event.is_action_pressed(ACTION_END_RUN) and splash_mode == SplashMode.LEVEL_COMPLETE:
+	if event.is_action_pressed(ACTION_END_RUN) and (splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED):
 		_handle_splash_end_run()
 		return
 
@@ -164,14 +174,21 @@ func _unhandled_input(event: InputEvent) -> void:
 		_toggle_invert_colors()
 		return
 
+	if _is_menu_navigation_active():
+		if _handle_menu_navigation_input(event):
+			return
+
 	if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or completed:
 		return
 
 	if _is_skip_input_event(event):
+		var skip_movement_intro: bool = _is_marker_intro_active() and _is_movement_input_event(event)
 		_skip_active_animations()
 		if splash_mode != SplashMode.NONE or completed:
 			return
-
+		if _is_marker_intro_active() and not skip_movement_intro:
+			return
+		
 	if _is_marker_intro_active() or _is_goal_clear_active():
 		return
 
@@ -283,12 +300,13 @@ func _start_new_run() -> void:
 	level_retries = 0
 	run_total_score = 0
 	run_levels_cleared = 0
-	_generate_level()
+	player_skill_rating = 0.0
+	_generate_level(false)
 
 
 func _restart_level() -> void:
 	level_retries += 1
-	_generate_level()
+	_generate_level(true)
 
 
 func _end_run() -> void:
@@ -296,7 +314,7 @@ func _end_run() -> void:
 	_show_run_complete_splash()
 
 
-func _generate_level() -> void:
+func _generate_level(reuse_current_profile: bool = false) -> void:
 	advance_timer.stop()
 	completed = false
 	splash_mode = SplashMode.NONE
@@ -309,17 +327,18 @@ func _generate_level() -> void:
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
 
-	var dimensions: Vector2i = _get_level_dimensions(level)
-	var difficulty_scale: float = pow(1.1, float(level - 1))
-	maze_width = dimensions.x
-	maze_height = dimensions.y
-	level_seed = abs(hash([run_seed, level, maze_width, maze_height]))
-	if level_seed == 0:
-		level_seed = 1
+	if not reuse_current_profile:
+		var dimensions: Vector2i = _get_level_dimensions(level)
+		current_level_difficulty_scale = _get_level_difficulty_scale(level)
+		maze_width = dimensions.x
+		maze_height = dimensions.y
+		level_seed = abs(hash([run_seed, level, maze_width, maze_height]))
+		if level_seed == 0:
+			level_seed = 1
 
 	_apply_palette(level)
 
-	var maze: Dictionary = MazeGeneratorScript.generate(maze_width, maze_height, level_seed, difficulty_scale)
+	var maze: Dictionary = MazeGeneratorScript.generate(maze_width, maze_height, level_seed, current_level_difficulty_scale)
 	cells = maze["cells"]
 	goal_cell = maze["goal"]
 	player_cell = maze["start"]
@@ -348,8 +367,7 @@ func _generate_level() -> void:
 func _get_level_dimensions(current_level: int) -> Vector2i:
 	var draw_area: Rect2 = _get_draw_area()
 	var aspect_ratio: float = maxf(draw_area.size.x / maxf(draw_area.size.y, 1.0), 0.45)
-	var scaled_area: float = BASE_LEVEL_AREA * pow(1.1, float(current_level - 1))
-	var target_area: int = maxi(int(ceili(scaled_area)), int(BASE_LEVEL_AREA) + current_level - 1)
+	var target_area: int = _get_target_level_area(current_level)
 	var width: int = maxi(4, int(round(sqrt(float(target_area) * aspect_ratio))))
 	var height: int = maxi(4, int(ceili(float(target_area) / float(width))))
 
@@ -357,6 +375,27 @@ func _get_level_dimensions(current_level: int) -> Vector2i:
 		height += 1
 
 	return Vector2i(width, height)
+
+
+func _get_target_level_area(current_level: int) -> int:
+	var level_span: int = maxi(current_level - 1, 0)
+	var early_levels: int = mini(level_span, 4)
+	var late_levels: int = maxi(level_span - 4, 0)
+	var base_area: float = BASE_LEVEL_AREA + float(early_levels) * 8.5 + float(late_levels) * 4.0
+	var skill_bonus: float = _get_skill_pressure(current_level) * (6.0 if current_level <= 4 else 4.0)
+	return maxi(int(ceili(base_area + skill_bonus)), int(BASE_LEVEL_AREA))
+
+
+func _get_level_difficulty_scale(current_level: int) -> float:
+	var level_span: int = maxi(current_level - 1, 0)
+	var early_levels: int = mini(level_span, 4)
+	var late_levels: int = maxi(level_span - 4, 0)
+	return 1.0 + float(early_levels) * 0.18 + float(late_levels) * 0.09 + _get_skill_pressure(current_level) * 0.28
+
+
+func _get_skill_pressure(current_level: int) -> float:
+	var taper: float = lerpf(1.4, 0.75, clampf(float(current_level - 1) / 8.0, 0.0, 1.0))
+	return clampf(player_skill_rating * taper, 0.0, 1.0)
 
 
 func _handle_maze_tap(screen_position: Vector2) -> void:
@@ -424,6 +463,7 @@ func _complete_level() -> void:
 func _finish_level_complete() -> void:
 	completed = true
 	splash_mode = SplashMode.LEVEL_COMPLETE
+	_record_level_result(true)
 	run_total_score += _current_level_score()
 	run_levels_cleared += 1
 	_set_footer_enabled(false)
@@ -437,44 +477,72 @@ func _advance_to_next_level() -> void:
 
 	level += 1
 	level_retries = 0
-	_generate_level()
+	_generate_level(false)
 
 
 func _update_ui() -> void:
-	maze_label.text = "Maze %d" % level
-	score_label.text = "Score %d" % _current_level_score()
-	timer_label.text = "Time %ds | Par %ds" % [_current_elapsed_seconds(), par_time_seconds]
+	maze_label.text = "LEVEL %d" % level
+	score_label.text = "SCORE %d" % _current_level_score()
+	timer_label.text = "TIME: %dS" % _current_time_left_seconds()
 	invert_button.text = _get_invert_button_text()
 
 
 func _update_completion_splash() -> void:
 	var stars: int = _calculate_star_rating()
-	splash_title_label.text = "Maze %d cleared" % level
-	splash_score_label.text = "Player score: %d  |  Time: %ds" % [_current_level_score(), _current_elapsed_seconds()]
-	splash_optimal_label.text = "Optimal score: %d  |  Par time: %ds" % [perfect_score, par_time_seconds]
-	splash_retries_label.text = "Retries: %d" % level_retries
+	splash_title_label.text = "LEVEL CLEAR"
+	splash_score_label.text = "SCORE %d  |  TIME %dS" % [_current_level_score(), _current_time_left_seconds()]
+	splash_optimal_label.visible = false
+	splash_optimal_label.text = ""
+	splash_retries_label.visible = false
+	splash_retries_label.text = ""
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
 	splash_caption_label.visible = false
 	splash_caption_label.text = ""
-	splash_action_button.text = "Continue [Enter / A]"
+	splash_action_button.text = "NEXT"
 	splash_action_button.visible = true
 	splash_retry_button.visible = true
 	splash_end_run_button.visible = true
 	_set_splash_visible(true)
+	_sync_menu_focus(true)
+
+
+func _show_time_up_splash() -> void:
+	splash_mode = SplashMode.LEVEL_FAILED
+	completed = true
+	_set_footer_enabled(false)
+	splash_title_label.text = "TIME UP"
+	splash_score_label.text = "SCORE %d" % _current_level_score()
+	splash_optimal_label.visible = false
+	splash_optimal_label.text = ""
+	splash_retries_label.visible = false
+	splash_retries_label.text = ""
+	splash_stars_label.visible = false
+	splash_caption_label.visible = false
+	splash_caption_label.text = ""
+	splash_action_button.text = "RETRY"
+	splash_action_button.visible = true
+	splash_retry_button.visible = false
+	splash_end_run_button.visible = true
+	_set_splash_visible(true)
+	_sync_menu_focus(true)
 
 
 func _show_run_complete_splash() -> void:
 	var include_current_level: bool = not completed and splash_mode != SplashMode.LEVEL_COMPLETE
+	if splash_mode == SplashMode.LEVEL_FAILED:
+		include_current_level = false
 	splash_mode = SplashMode.RUN_COMPLETE
 	completed = true
 	_set_footer_enabled(false)
 	var final_score: int = run_total_score + (_current_level_score() if include_current_level else 0)
-	splash_title_label.text = "Run ended"
-	splash_score_label.text = "Final score: %d" % final_score
-	splash_optimal_label.text = "Mazes cleared: %d" % run_levels_cleared
-	splash_retries_label.text = "Current maze: %d  |  Time: %ds" % [level, _current_elapsed_seconds()]
+	splash_title_label.text = "RUN OVER"
+	splash_score_label.text = "SCORE %d" % final_score
+	splash_optimal_label.visible = true
+	splash_optimal_label.text = "LEVELS %d" % run_levels_cleared
+	splash_retries_label.visible = false
+	splash_retries_label.text = ""
 	splash_stars_label.visible = false
 	splash_caption_label.visible = false
 	splash_caption_label.text = ""
@@ -483,10 +551,11 @@ func _show_run_complete_splash() -> void:
 	splash_retry_button.visible = false
 	splash_end_run_button.visible = false
 	_set_splash_visible(true)
+	_sync_menu_focus(true)
 
 
 func _current_level_score() -> int:
-	return maxi(player_steps + _current_time_penalty() - collected_bonus_total, 0)
+	return maxi(player_steps + collected_bonus_total, 0)
 
 
 func _current_run_total_score() -> int:
@@ -495,13 +564,28 @@ func _current_run_total_score() -> int:
 	return run_total_score + _current_level_score()
 
 
+func _record_level_result(was_successful: bool) -> void:
+	var sample: float = 0.0
+	if was_successful:
+		var path_efficiency: float = clampf(float(optimal_steps) / maxf(float(player_steps), float(optimal_steps)), 0.0, 1.0)
+		var time_efficiency: float = clampf(float(_current_time_left_seconds()) / maxf(float(par_time_seconds), 1.0), 0.0, 1.0)
+		var score_efficiency: float = 1.0 if _current_level_score() == 0 else clampf(1.0 - float(_current_level_score()) / maxf(float(optimal_steps), 1.0), 0.0, 1.0)
+		var retry_penalty: float = minf(float(level_retries) * 0.14, 0.35)
+		sample = clampf(path_efficiency * 0.4 + time_efficiency * 0.35 + score_efficiency * 0.25 - retry_penalty, 0.0, 1.0)
+	else:
+		sample = maxf(0.0, player_skill_rating - 0.18 - float(level_retries) * 0.04)
+
+	var adapt_rate: float = 0.4 if level <= 4 else 0.2
+	player_skill_rating = clampf(lerpf(player_skill_rating, sample, adapt_rate), 0.0, 1.0)
+
+
 func _calculate_star_rating() -> int:
 	var level_score: int = _current_level_score()
-	if level_score == perfect_score and level_retries == 0:
+	if level_score <= perfect_score:
 		return 3
 
-	var two_star_limit: int = maxi(1, int(ceili(float(optimal_steps) * 0.25)))
-	if level_score <= two_star_limit and level_retries <= 1:
+	var two_star_limit: int = perfect_score + maxi(1, int(ceili(float(optimal_steps) * 0.2)))
+	if level_score <= two_star_limit:
 		return 2
 
 	return 1
@@ -522,11 +606,11 @@ func _build_star_string(stars: int) -> String:
 func _get_star_caption(stars: int) -> String:
 	match stars:
 		3:
-			return "Perfect zero-score run."
+			return "Fast and clean."
 		2:
-			return "Sharp route."
+			return "Strong finish."
 		_:
-			return "Cleared with room to optimize."
+			return "You beat the clock."
 
 
 func _direction_from_key(event: InputEventKey) -> Vector2i:
@@ -582,13 +666,21 @@ func _handle_joypad_axis(value: float, is_horizontal: bool) -> void:
 		if joypad_x_state == direction_sign:
 			return
 		joypad_x_state = direction_sign
-		_try_move_in_direction(Vector2i.RIGHT if direction_sign > 0 else Vector2i.LEFT)
+		var horizontal_direction: Vector2i = Vector2i.RIGHT if direction_sign > 0 else Vector2i.LEFT
+		if _is_menu_navigation_active():
+			_move_menu_focus(horizontal_direction)
+			return
+		_try_move_in_direction(horizontal_direction)
 		return
 
 	if joypad_y_state == direction_sign:
 		return
 	joypad_y_state = direction_sign
-	_try_move_in_direction(Vector2i.DOWN if direction_sign > 0 else Vector2i.UP)
+	var vertical_direction: Vector2i = Vector2i.DOWN if direction_sign > 0 else Vector2i.UP
+	if _is_menu_navigation_active():
+		_move_menu_focus(vertical_direction)
+		return
+	_try_move_in_direction(vertical_direction)
 
 
 func _get_draw_area() -> Rect2:
@@ -663,6 +755,7 @@ func _build_ui() -> void:
 	invert_button = _make_button(_get_invert_button_text())
 	invert_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	invert_button.pressed.connect(_toggle_invert_colors)
+	_connect_button_focus(invert_button)
 	detail_row.add_child(invert_button)
 
 	bottom_panel = PanelContainer.new()
@@ -675,12 +768,14 @@ func _build_ui() -> void:
 	bottom_content.add_theme_constant_override("separation", 12)
 	bottom_panel.add_child(bottom_content)
 
-	retry_button = _make_button("Retry maze [R / Y]")
+	retry_button = _make_button("RETRY MAZE")
 	retry_button.pressed.connect(_restart_level)
+	_connect_button_focus(retry_button)
 	bottom_content.add_child(retry_button)
 
-	end_run_button = _make_button("End run [Esc / Start]")
+	end_run_button = _make_button("END RUN")
 	end_run_button.pressed.connect(_end_run)
+	_connect_button_focus(end_run_button)
 	bottom_content.add_child(end_run_button)
 
 	splash_center = CenterContainer.new()
@@ -722,16 +817,19 @@ func _build_ui() -> void:
 
 	splash_action_button = _make_button(_get_splash_action_text())
 	splash_action_button.pressed.connect(_handle_splash_action)
+	_connect_button_focus(splash_action_button)
 	splash_content.add_child(splash_action_button)
 
-	splash_retry_button = _make_button("Retry maze [R / Y]")
+	splash_retry_button = _make_button("RETRY MAZE")
 	splash_retry_button.pressed.connect(_handle_splash_retry)
 	splash_retry_button.visible = false
+	_connect_button_focus(splash_retry_button)
 	splash_content.add_child(splash_retry_button)
 
-	splash_end_run_button = _make_button("End run [Esc / Start]")
+	splash_end_run_button = _make_button("END RUN")
 	splash_end_run_button.pressed.connect(_handle_splash_end_run)
 	splash_end_run_button.visible = false
+	_connect_button_focus(splash_end_run_button)
 	splash_content.add_child(splash_end_run_button)
 
 	_apply_palette_to_ui()
@@ -748,11 +846,19 @@ func _handle_splash_action() -> void:
 	match splash_mode:
 		SplashMode.LEVEL_COMPLETE:
 			_advance_to_next_level()
+		SplashMode.LEVEL_FAILED:
+			_restart_level()
 		SplashMode.RUN_COMPLETE:
 			_start_new_run()
 
 
 func _handle_splash_retry() -> void:
+	if splash_mode == SplashMode.LEVEL_FAILED:
+		splash_mode = SplashMode.NONE
+		completed = false
+		_restart_level()
+		return
+
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
 
@@ -764,6 +870,10 @@ func _handle_splash_retry() -> void:
 
 
 func _handle_splash_end_run() -> void:
+	if splash_mode == SplashMode.LEVEL_FAILED:
+		_show_run_complete_splash()
+		return
+
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
 
@@ -822,16 +932,33 @@ func _is_skip_input_event(event: InputEvent) -> bool:
 	return false
 
 
+func _is_movement_input_event(event: InputEvent) -> bool:
+	if event is InputEventScreenTouch:
+		var screen_touch: InputEventScreenTouch = event
+		return screen_touch.pressed
+	if event is InputEventMouseButton:
+		var mouse_button: InputEventMouseButton = event
+		return mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT
+	if event is InputEventKey:
+		var key_event: InputEventKey = event
+		return key_event.pressed and not key_event.echo and _direction_from_key(key_event) != Vector2i.ZERO
+	if event is InputEventJoypadButton:
+		var joypad_button: InputEventJoypadButton = event
+		return joypad_button.pressed and _direction_from_joypad_button(joypad_button) != Vector2i.ZERO
+	if event is InputEventJoypadMotion:
+		var joypad_motion: InputEventJoypadMotion = event
+		return absf(joypad_motion.axis_value) >= JOYPAD_TRIGGER
+	return false
+
+
 func _get_splash_action_text() -> String:
 	if splash_mode == SplashMode.RUN_COMPLETE:
-		return "Start new run [Enter / A]"
-	return "Continue [Enter / A]"
+		return "NEW RUN"
+	return "NEXT"
 
 
 func _get_invert_button_text() -> String:
-	if invert_colors_enabled:
-		return "Invert on [I / X]"
-	return "Invert off [I / X]"
+	return "INVERT"
 
 
 func _toggle_invert_colors() -> void:
@@ -845,7 +972,19 @@ func _make_button(text: String) -> Button:
 	var button: Button = Button.new()
 	button.text = text
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.focus_mode = Control.FOCUS_ALL
+	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	return button
+
+
+func _connect_button_focus(button: Button) -> void:
+	button.focus_entered.connect(func() -> void:
+		_set_menu_focus_from_button(button)
+	)
+	button.mouse_entered.connect(func() -> void:
+		if button.visible and not button.disabled:
+			button.grab_focus()
+	)
 
 
 func _make_splash_stat_label() -> Label:
@@ -942,8 +1081,8 @@ func _apply_palette(level_value: int) -> void:
 		wall_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.46, 0.34)
 		node_color = Color("6f8098")
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.74, 0.9)
-		bonus_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.72, 0.82)
-		bonus_inner_color = Color("fff8f6")
+		bonus_gain_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.72, 0.82)
+		bonus_loss_color = Color.from_hsv(0.33 - 0.04 * difficulty, 0.6, 0.68)
 		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.58, 0.82)
 		player_core_color = Color("ffe8b6")
 		panel_color = Color("e6eef8")
@@ -965,8 +1104,8 @@ func _apply_palette(level_value: int) -> void:
 		wall_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.42, 0.82)
 		node_color = Color("d7e3f4")
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.72, 0.98)
-		bonus_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
-		bonus_inner_color = Color("fff4ef")
+		bonus_gain_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
+		bonus_loss_color = Color.from_hsv(0.33 - 0.04 * difficulty, 0.7, 0.9)
 		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.56, 0.98)
 		player_core_color = Color("ffe7b3")
 		panel_color = Color("1b2a40")
@@ -992,33 +1131,39 @@ func _apply_palette_to_ui() -> void:
 	maze_label.add_theme_color_override("font_outline_color", outline_color)
 	score_label.add_theme_color_override("font_color", goal_color)
 	score_label.add_theme_color_override("font_outline_color", outline_color)
-	timer_label.add_theme_color_override("font_color", bonus_color)
+	timer_label.add_theme_color_override("font_color", goal_color)
 	timer_label.add_theme_color_override("font_outline_color", outline_color)
 
 	retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
 	retry_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
 	retry_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
+	retry_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
 	end_run_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
 	end_run_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
 	end_run_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
+	end_run_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
 	invert_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
 	invert_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
 	invert_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
+	invert_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
 	splash_action_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
 	splash_action_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
 	splash_action_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
+	splash_action_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
 	splash_retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
 	splash_retry_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
 	splash_retry_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
+	splash_retry_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
 	splash_end_run_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
 	splash_end_run_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
 	splash_end_run_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
+	splash_end_run_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
 
 	splash_title_label.add_theme_color_override("font_color", goal_color)
 	splash_title_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_score_label.add_theme_color_override("font_color", player_color)
 	splash_score_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_optimal_label.add_theme_color_override("font_color", bonus_color)
+	splash_optimal_label.add_theme_color_override("font_color", bonus_loss_color)
 	splash_optimal_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_retries_label.add_theme_color_override("font_color", text_color)
 	splash_retries_label.add_theme_color_override("font_outline_color", outline_color)
@@ -1059,24 +1204,24 @@ func _refresh_ui_layout() -> void:
 
 func _apply_ui_metrics() -> void:
 	var scale: float = _get_ui_scale()
-	var header_size: int = int(round(60.0 * scale))
-	var detail_size: int = int(round(42.0 * scale))
-	var button_size: int = int(round(28.0 * scale))
-	var splash_title_size: int = int(round(68.0 * scale))
-	var splash_stat_size: int = int(round(42.0 * scale))
-	var splash_star_size: int = int(round(84.0 * scale))
-	var splash_caption_size: int = int(round(32.0 * scale))
+	var header_size: int = int(round(70.0 * scale))
+	var detail_size: int = int(round(50.0 * scale))
+	var button_size: int = int(round(34.0 * scale))
+	var splash_title_size: int = int(round(76.0 * scale))
+	var splash_stat_size: int = int(round(50.0 * scale))
+	var splash_star_size: int = int(round(92.0 * scale))
+	var splash_caption_size: int = int(round(36.0 * scale))
 
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(score_label, header_size, 7, goal_color)
 	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_apply_label_style(timer_label, detail_size, 6, bonus_color)
+	_apply_label_style(timer_label, detail_size, 6, goal_color)
 	timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
 	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
-	_apply_label_style(splash_optimal_label, splash_stat_size, 6, bonus_color)
+	_apply_label_style(splash_optimal_label, splash_stat_size, 6, bonus_loss_color)
 	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
 	_apply_label_style(splash_caption_label, splash_caption_size, 6, secondary_glow_color.lightened(0.2))
 
@@ -1102,10 +1247,10 @@ func _apply_label_style(label: Label, font_size: int, outline_size: int, color: 
 
 
 func _apply_button_style_metrics(button: Button, font_size: int) -> void:
-	button.custom_minimum_size = Vector2(0.0, round(96.0 * _get_ui_scale()))
+	button.custom_minimum_size = Vector2(0.0, round(112.0 * _get_ui_scale()))
 	button.add_theme_font_override("font", ui_font)
 	button.add_theme_font_size_override("font_size", font_size)
-	button.add_theme_constant_override("outline_size", 5)
+	button.add_theme_constant_override("outline_size", 6)
 	button.add_theme_color_override("font_color", text_color)
 	button.add_theme_color_override("font_outline_color", outline_color)
 
@@ -1119,14 +1264,14 @@ func _get_top_hud_height() -> float:
 	var base_height: float = BASE_TOP_HUD_HEIGHT * _get_ui_scale()
 	if top_panel == null:
 		return base_height
-	return minf(maxf(base_height, top_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.26)
+	return minf(maxf(base_height, top_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.3)
 
 
 func _get_bottom_hud_height() -> float:
 	var base_height: float = BASE_BOTTOM_HUD_HEIGHT * _get_ui_scale()
 	if bottom_panel == null:
 		return base_height
-	return minf(maxf(base_height, bottom_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.24)
+	return minf(maxf(base_height, bottom_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.28)
 
 
 func _get_outer_margin() -> float:
@@ -1163,26 +1308,117 @@ func _make_panel_style(bg_color: Color, border_color: Color, shadow_color: Color
 func _make_button_style(bg_color: Color) -> StyleBoxFlat:
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	style.bg_color = bg_color
-	style.border_color = bg_color.lightened(0.18)
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(16)
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 14
-	style.content_margin_bottom = 14
-	style.shadow_color = _with_alpha(bg_color.darkened(0.55), 0.35)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0.0, 4.0)
+	style.border_color = bg_color.lightened(0.3)
+	style.set_border_width_all(4)
+	style.set_corner_radius_all(18)
+	style.content_margin_left = 18
+	style.content_margin_right = 18
+	style.content_margin_top = 16
+	style.content_margin_bottom = 16
+	style.shadow_color = _with_alpha(bg_color.darkened(0.58), 0.42)
+	style.shadow_size = 14
+	style.shadow_offset = Vector2(0.0, 6.0)
+	return style
+
+
+func _make_button_focus_style(border_color: Color) -> StyleBoxFlat:
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	style.border_color = border_color.lightened(0.25)
+	style.set_border_width_all(5)
+	style.set_corner_radius_all(20)
+	style.shadow_color = _with_alpha(border_color.lightened(0.15), 0.38)
+	style.shadow_size = 14
+	style.shadow_offset = Vector2.ZERO
 	return style
 
 
 func _set_splash_visible(is_visible: bool) -> void:
 	splash_panel.visible = is_visible
+	if not is_visible:
+		menu_focus_index = -1
 
 
 func _set_footer_enabled(is_enabled: bool) -> void:
 	retry_button.disabled = not is_enabled
 	end_run_button.disabled = not is_enabled
+
+
+func _is_menu_navigation_active() -> bool:
+	return splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED or splash_mode == SplashMode.RUN_COMPLETE
+
+
+func _handle_menu_navigation_input(event: InputEvent) -> bool:
+	var direction: Vector2i = Vector2i.ZERO
+	if event is InputEventKey:
+		var key_event: InputEventKey = event
+		if key_event.pressed and not key_event.echo:
+			direction = _direction_from_key(key_event)
+	elif event is InputEventJoypadButton:
+		var button_event: InputEventJoypadButton = event
+		if button_event.pressed:
+			direction = _direction_from_joypad_button(button_event)
+	elif event is InputEventJoypadMotion:
+		_handle_joypad_motion(event)
+		return true
+
+	if direction == Vector2i.ZERO:
+		return false
+
+	_move_menu_focus(direction)
+	return true
+
+
+func _move_menu_focus(direction: Vector2i) -> void:
+	var buttons: Array[Button] = _get_active_menu_buttons()
+	if buttons.is_empty():
+		menu_focus_index = -1
+		return
+
+	if menu_focus_index < 0 or menu_focus_index >= buttons.size():
+		menu_focus_index = 0
+	else:
+		var step: int = -1 if direction.x < 0 or direction.y < 0 else 1
+		menu_focus_index = posmod(menu_focus_index + step, buttons.size())
+
+	buttons[menu_focus_index].grab_focus()
+
+
+func _sync_menu_focus(force_first: bool = false) -> void:
+	var buttons: Array[Button] = _get_active_menu_buttons()
+	if buttons.is_empty():
+		menu_focus_index = -1
+		return
+
+	if force_first or menu_focus_index < 0 or menu_focus_index >= buttons.size():
+		menu_focus_index = 0
+
+	buttons[menu_focus_index].grab_focus()
+
+
+func _activate_focused_menu_button() -> void:
+	var buttons: Array[Button] = _get_active_menu_buttons()
+	if buttons.is_empty():
+		_handle_splash_action()
+		return
+
+	if menu_focus_index < 0 or menu_focus_index >= buttons.size():
+		menu_focus_index = 0
+
+	buttons[menu_focus_index].emit_signal("pressed")
+
+
+func _get_active_menu_buttons() -> Array[Button]:
+	var buttons: Array[Button] = []
+	for button in [splash_action_button, splash_retry_button, splash_end_run_button]:
+		if button.visible and not button.disabled:
+			buttons.append(button)
+	return buttons
+
+
+func _set_menu_focus_from_button(button: Button) -> void:
+	var buttons: Array[Button] = _get_active_menu_buttons()
+	menu_focus_index = buttons.find(button)
 
 
 func _draw_background_glow(viewport_rect: Rect2) -> void:
@@ -1209,9 +1445,7 @@ func _draw_playfield_trim(draw_area: Rect2) -> void:
 
 func _draw_bonus_marker(center: Vector2, radius: float, pulse: float, bonus_value: int) -> void:
 	draw_circle(center, radius * (1.04 + pulse * 0.03), _with_alpha(outline_color, 0.24))
-	draw_circle(center, radius, bonus_color)
-	draw_circle(center, radius * 0.84, bonus_inner_color)
-	_draw_bonus_value(center, radius, bonus_value)
+	draw_circle(center, radius, bonus_gain_color if bonus_value > 0 else bonus_loss_color)
 
 
 func _draw_goal_marker(center: Vector2, radius: float, pulse: float) -> void:
@@ -1260,35 +1494,26 @@ func _current_elapsed_seconds() -> int:
 
 
 func _current_time_penalty() -> int:
-	return maxi(_current_elapsed_seconds() - par_time_seconds, 0)
+	return 0
+
+
+func _current_time_left_seconds() -> int:
+	return maxi(int(ceili(float(par_time_seconds) - level_elapsed_time)), 0)
 
 
 func _calculate_par_time_seconds() -> int:
-	var base_time: float = float(optimal_steps) * 1.75
-	var layout_time: float = sqrt(float(maze_width * maze_height)) * 1.2
-	return maxi(6, int(ceili(base_time + layout_time)))
+	var skill_pressure: float = _get_skill_pressure(level)
+	var base_time: float = float(optimal_steps) * lerpf(0.78, 0.68, skill_pressure)
+	var layout_time: float = sqrt(float(maze_width * maze_height)) * lerpf(0.54, 0.44, skill_pressure)
+	return maxi(5, int(ceili(base_time + layout_time + 1.0)))
 
 
-func _draw_bonus_value(center: Vector2, radius: float, bonus_value: int) -> void:
-	var font_size: int = maxi(15, mini(28, int(round(radius * 1.65))))
-	var label_width: float = radius * 2.4
-	var baseline: Vector2 = center + Vector2(-label_width * 0.5, font_size * 0.34)
-	var bonus_text: String = "%d" % bonus_value
-	draw_string(
-		ui_font,
-		baseline + Vector2(0.0, 1.2),
-		bonus_text,
-		HORIZONTAL_ALIGNMENT_CENTER,
-		label_width,
-		font_size,
-		outline_color
-	)
-	draw_string(
-		ui_font,
-		baseline,
-		bonus_text,
-		HORIZONTAL_ALIGNMENT_CENTER,
-		label_width,
-		font_size,
-		text_color
-	)
+func _fail_level_timeout() -> void:
+	if splash_mode != SplashMode.NONE or completed:
+		return
+
+	move_animation_elapsed = MOVE_ANIMATION_DURATION
+	goal_clear_elapsed = GOAL_CLEAR_DURATION
+	pending_goal_completion = false
+	_record_level_result(false)
+	_show_time_up_splash()

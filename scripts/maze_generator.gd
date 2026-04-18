@@ -59,7 +59,6 @@ static func generate(width: int, height: int, seed: int, difficulty_scale: float
 	var start_bfs: Dictionary = _bfs(cells, width, height, start)
 	var goal_bfs: Dictionary = _bfs(cells, width, height, goal)
 	var solution_path: Array[Vector2i] = _reconstruct_path(start_bfs["previous"], start, goal)
-	var route_bonus_steps: Array[int] = _build_route_bonus_steps(max(solution_path.size() - 1, 0))
 	var bonuses: Array[Dictionary] = _build_bonuses(
 		cells,
 		width,
@@ -282,27 +281,6 @@ static func _build_bonuses(
 		detour_gain_limit -= 1
 
 	return bonuses
-
-
-static func _build_route_bonus_steps(optimal_length: int) -> Array[int]:
-	var steps: Array[int] = []
-	if optimal_length <= 1:
-		return steps
-
-	var last_bonus_step: int = optimal_length - 1
-	var placement_count: int = clampi(int(ceili(float(optimal_length) / float(BONUS_VALUE))), 1, last_bonus_step)
-	var previous_step: int = 0
-
-	for placement_index in range(placement_count):
-		var remaining_slots: int = placement_count - placement_index
-		var raw_step: int = int(round(float(last_bonus_step) * float(placement_index + 1) / float(placement_count + 1)))
-		var step_index: int = clampi(raw_step, previous_step + 1, last_bonus_step - remaining_slots + 1)
-		steps.append(step_index)
-		previous_step = step_index
-
-	return steps
-
-
 static func _pick_path_steps(optimal_length: int, count: int, rng: RandomNumberGenerator, excluded_steps: Dictionary = {}) -> Array[int]:
 	var candidates: Array[int] = []
 	for step_index in range(1, optimal_length):

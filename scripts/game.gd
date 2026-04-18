@@ -11,7 +11,6 @@ const MARKER_INTRO_START_SCALE := 4.0
 const MOVE_ANIMATION_DURATION := 0.14
 const GOAL_CLEAR_DURATION := 0.32
 const BONUS_PICKUP_DURATION := 0.26
-const AUTO_ADVANCE_SECONDS := 2.8
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
 const BASE_LEVEL_AREA := 24.0
@@ -591,12 +590,6 @@ func _current_level_score() -> int:
 	return maxi(player_steps + collected_bonus_total, 0)
 
 
-func _current_run_total_score() -> int:
-	if splash_mode == SplashMode.LEVEL_COMPLETE:
-		return run_total_score
-	return run_total_score + _current_level_score()
-
-
 func _record_level_result(was_successful: bool) -> void:
 	var sample: float = 0.0
 	if was_successful:
@@ -634,16 +627,6 @@ func _build_star_string(stars: int) -> String:
 			segments.append("☆")
 
 	return " ".join(segments)
-
-
-func _get_star_caption(stars: int) -> String:
-	match stars:
-		3:
-			return "Fast and clean."
-		2:
-			return "Strong finish."
-		_:
-			return "You beat the clock."
 
 
 func _direction_from_key(event: InputEventKey) -> Vector2i:
@@ -1551,10 +1534,6 @@ func _with_alpha(color: Color, alpha: float) -> Color:
 
 func _current_elapsed_seconds() -> int:
 	return int(ceili(level_elapsed_time))
-
-
-func _current_time_penalty() -> int:
-	return 0
 
 
 func _current_time_left_seconds() -> int:

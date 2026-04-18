@@ -10,6 +10,9 @@ const BASE_LEVEL_AREA := 24.0
 const BASE_TOP_HUD_HEIGHT := 180.0
 const BASE_BOTTOM_HUD_HEIGHT := 150.0
 const BASE_OUTER_MARGIN := 12.0
+const ACTION_ACCEPT := "maze_accept"
+const ACTION_RETRY := "maze_retry"
+const ACTION_END_RUN := "maze_end_run"
 
 enum SplashMode {
 	NONE,
@@ -72,6 +75,7 @@ var timer_label: Label
 var retry_button: Button
 var end_run_button: Button
 var splash_action_button: Button
+var splash_center: CenterContainer
 var top_panel: PanelContainer
 var bottom_panel: PanelContainer
 var splash_panel: PanelContainer
@@ -87,6 +91,7 @@ var ui_font: Font
 
 func _ready() -> void:
 	randomize()
+	_configure_input_actions()
 	_load_ui_font()
 	_apply_palette(level)
 	_build_ui()
@@ -108,7 +113,20 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed(ACTION_ACCEPT):
+		if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE:
+			_handle_splash_action()
+		return
+
 	if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or completed:
+		return
+
+	if event.is_action_pressed(ACTION_RETRY):
+		_restart_level()
+		return
+
+	if event.is_action_pressed(ACTION_END_RUN):
+		_end_run()
 		return
 
 	if event is InputEventScreenTouch:
@@ -363,8 +381,8 @@ func _update_completion_splash() -> void:
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
-	splash_caption_label.text = "%s Tap continue when you're ready." % _get_star_caption(stars)
-	splash_action_button.text = "Continue"
+	splash_caption_label.text = "%s Press Enter or A when you're ready." % _get_star_caption(stars)
+	splash_action_button.text = _get_splash_action_text()
 	splash_action_button.visible = true
 	_set_splash_visible(true)
 
@@ -379,8 +397,8 @@ func _show_run_complete_splash() -> void:
 	splash_optimal_label.text = "Mazes cleared: %d" % run_levels_cleared
 	splash_retries_label.text = "Current maze: %d  |  Time: %ds" % [level, _current_elapsed_seconds()]
 	splash_stars_label.visible = false
-	splash_caption_label.text = "Start a new run when you're ready."
-	splash_action_button.text = "Start a new run"
+	splash_caption_label.text = "Press Enter or A when you're ready to start again."
+	splash_action_button.text = _get_splash_action_text()
 	splash_action_button.visible = true
 	_set_splash_visible(true)
 
@@ -559,21 +577,24 @@ func _build_ui() -> void:
 	bottom_content.add_theme_constant_override("separation", 12)
 	bottom_panel.add_child(bottom_content)
 
-	retry_button = _make_button("Retry current maze")
+	retry_button = _make_button("Retry maze [R / Y]")
 	retry_button.pressed.connect(_restart_level)
 	bottom_content.add_child(retry_button)
 
-	end_run_button = _make_button("End run")
+	end_run_button = _make_button("End run [Esc / Start]")
 	end_run_button.pressed.connect(_end_run)
 	bottom_content.add_child(end_run_button)
 
+	splash_center = CenterContainer.new()
+	splash_center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	splash_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(splash_center)
+
 	splash_panel = PanelContainer.new()
-	splash_panel.anchor_left = 0.5
-	splash_panel.anchor_top = 0.5
-	splash_panel.anchor_right = 0.5
-	splash_panel.anchor_bottom = 0.5
+	splash_panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	splash_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	splash_panel.visible = false
-	ui.add_child(splash_panel)
+	splash_center.add_child(splash_panel)
 
 	var splash_content: VBoxContainer = VBoxContainer.new()
 	splash_content.add_theme_constant_override("separation", 12)
@@ -600,7 +621,7 @@ func _build_ui() -> void:
 	splash_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	splash_content.add_child(splash_caption_label)
 
-	splash_action_button = _make_button("Start a new run")
+	splash_action_button = _make_button(_get_splash_action_text())
 	splash_action_button.pressed.connect(_handle_splash_action)
 	splash_content.add_child(splash_action_button)
 
@@ -620,6 +641,43 @@ func _handle_splash_action() -> void:
 			_advance_to_next_level()
 		SplashMode.RUN_COMPLETE:
 			_start_new_run()
+
+
+func _configure_input_actions() -> void:
+	_ensure_key_action(ACTION_ACCEPT, KEY_ENTER)
+	_ensure_key_action(ACTION_ACCEPT, KEY_KP_ENTER)
+	_ensure_key_action(ACTION_ACCEPT, KEY_SPACE)
+	_ensure_joypad_action(ACTION_ACCEPT, JOY_BUTTON_A)
+	_ensure_key_action(ACTION_RETRY, KEY_R)
+	_ensure_joypad_action(ACTION_RETRY, JOY_BUTTON_Y)
+	_ensure_key_action(ACTION_END_RUN, KEY_ESCAPE)
+	_ensure_joypad_action(ACTION_END_RUN, JOY_BUTTON_START)
+
+
+func _ensure_key_action(action_name: String, keycode: Key) -> void:
+	if not InputMap.has_action(action_name):
+		InputMap.add_action(action_name)
+
+	var event: InputEventKey = InputEventKey.new()
+	event.keycode = keycode
+	if not InputMap.action_has_event(action_name, event):
+		InputMap.action_add_event(action_name, event)
+
+
+func _ensure_joypad_action(action_name: String, button_index: JoyButton) -> void:
+	if not InputMap.has_action(action_name):
+		InputMap.add_action(action_name)
+
+	var event: InputEventJoypadButton = InputEventJoypadButton.new()
+	event.button_index = button_index
+	if not InputMap.action_has_event(action_name, event):
+		InputMap.action_add_event(action_name, event)
+
+
+func _get_splash_action_text() -> String:
+	if splash_mode == SplashMode.RUN_COMPLETE:
+		return "Start new run [Enter / A]"
+	return "Continue [Enter / A]"
 
 
 func _make_button(text: String) -> Button:
@@ -718,10 +776,11 @@ func _refresh_ui_layout() -> void:
 	bottom_panel.offset_right = -margin
 	bottom_panel.offset_bottom = -margin
 
-	splash_panel.offset_left = -splash_width * 0.5
-	splash_panel.offset_top = -splash_height * 0.5
-	splash_panel.offset_right = splash_width * 0.5
-	splash_panel.offset_bottom = splash_height * 0.5
+	splash_center.offset_left = margin
+	splash_center.offset_top = margin
+	splash_center.offset_right = -margin
+	splash_center.offset_bottom = -margin
+	splash_panel.custom_minimum_size = Vector2(splash_width, splash_height)
 
 	_apply_ui_metrics()
 

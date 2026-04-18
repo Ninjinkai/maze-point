@@ -1,6 +1,7 @@
 extends Node2D
 
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
+const ProceduralAudioScript = preload("res://scripts/procedural_audio.gd")
 const BRIGHT_TEXT_COLOR := Color("f7fbff")
 const DARK_TEXT_COLOR := Color("102030")
 const DARK_OUTLINE_COLOR := Color("09111d")
@@ -9,6 +10,7 @@ const MARKER_INTRO_DURATION := 3.0
 const MARKER_INTRO_START_SCALE := 4.0
 const MOVE_ANIMATION_DURATION := 0.14
 const GOAL_CLEAR_DURATION := 0.32
+const BONUS_PICKUP_DURATION := 0.26
 const AUTO_ADVANCE_SECONDS := 2.8
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
@@ -49,6 +51,9 @@ var pulse_time: float = 0.0
 var marker_intro_elapsed: float = MARKER_INTRO_DURATION
 var move_animation_elapsed: float = MOVE_ANIMATION_DURATION
 var goal_clear_elapsed: float = GOAL_CLEAR_DURATION
+var bonus_pickup_elapsed: float = BONUS_PICKUP_DURATION
+var bonus_pickup_cell: Vector2i = Vector2i(-1, -1)
+var bonus_pickup_value: int = 0
 var move_animation_from: Vector2 = Vector2.ZERO
 var move_animation_to: Vector2 = Vector2.ZERO
 var pending_goal_completion: bool = false
@@ -110,6 +115,7 @@ var splash_stars_label: Label
 var splash_caption_label: Label
 var advance_timer: Timer
 var ui_font: Font
+var audio_controller
 
 
 func _ready() -> void:
@@ -119,6 +125,7 @@ func _ready() -> void:
 	_apply_palette(level)
 	_build_ui()
 	_build_advance_timer()
+	_build_audio()
 	_refresh_ui_layout()
 	_start_new_run()
 
@@ -150,6 +157,8 @@ func _process(delta: float) -> void:
 			if not _is_goal_clear_active():
 				_finish_level_complete()
 		_update_ui()
+	if _is_bonus_pickup_active():
+		bonus_pickup_elapsed = minf(bonus_pickup_elapsed + delta, BONUS_PICKUP_DURATION)
 	queue_redraw()
 
 
@@ -290,6 +299,9 @@ func _draw() -> void:
 			continue
 		_draw_bonus_marker(_cell_to_screen(bonus_cell), bonus_radius, pulse, int(level_bonus_values[bonus_cell]))
 
+	if _is_bonus_pickup_active():
+		_draw_bonus_pickup_effect(_cell_to_screen(bonus_pickup_cell), bonus_radius, bonus_pickup_value)
+
 	_draw_goal_marker(_cell_to_screen(goal_cell), goal_radius * goal_intro_scale * goal_clear_scale, pulse)
 	_draw_player_marker(_get_player_draw_position(), player_radius * player_intro_scale * player_clear_scale, pulse)
 
@@ -301,16 +313,22 @@ func _start_new_run() -> void:
 	run_total_score = 0
 	run_levels_cleared = 0
 	player_skill_rating = 0.0
+	if audio_controller != null:
+		audio_controller.play_restart()
 	_generate_level(false)
 
 
 func _restart_level() -> void:
 	level_retries += 1
+	if audio_controller != null:
+		audio_controller.play_restart()
 	_generate_level(true)
 
 
 func _end_run() -> void:
 	advance_timer.stop()
+	if audio_controller != null:
+		audio_controller.play_menu_confirm()
 	_show_run_complete_splash()
 
 
@@ -323,6 +341,9 @@ func _generate_level(reuse_current_profile: bool = false) -> void:
 	marker_intro_elapsed = 0.0
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
+	bonus_pickup_elapsed = BONUS_PICKUP_DURATION
+	bonus_pickup_cell = Vector2i(-1, -1)
+	bonus_pickup_value = 0
 	pending_goal_completion = false
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
@@ -360,6 +381,8 @@ func _generate_level(reuse_current_profile: bool = false) -> void:
 
 	par_time_seconds = _calculate_par_time_seconds()
 	_collect_bonus_at(player_cell)
+	if audio_controller != null:
+		audio_controller.update_level_music(level, level_seed)
 	_update_ui()
 	queue_redraw()
 
@@ -436,6 +459,8 @@ func _move_player_to(target_cell: Vector2i) -> void:
 	move_animation_to = Vector2(target_cell)
 	move_animation_elapsed = 0.0
 	player_steps += 1
+	if audio_controller != null:
+		audio_controller.play_move()
 	_collect_bonus_at(player_cell)
 
 	if player_cell == goal_cell:
@@ -453,10 +478,18 @@ func _collect_bonus_at(cell: Vector2i) -> void:
 		return
 
 	collected_bonus_cells[cell] = true
-	collected_bonus_total += int(level_bonus_values[cell])
+	var bonus_value: int = int(level_bonus_values[cell])
+	collected_bonus_total += bonus_value
+	bonus_pickup_cell = cell
+	bonus_pickup_value = bonus_value
+	bonus_pickup_elapsed = 0.0
+	if audio_controller != null:
+		audio_controller.play_bonus(bonus_value)
 
 
 func _complete_level() -> void:
+	if audio_controller != null:
+		audio_controller.play_goal()
 	pending_goal_completion = true
 
 
@@ -842,7 +875,15 @@ func _build_advance_timer() -> void:
 	add_child(advance_timer)
 
 
+func _build_audio() -> void:
+	audio_controller = ProceduralAudioScript.new()
+	audio_controller.name = "ProceduralAudio"
+	add_child(audio_controller)
+
+
 func _handle_splash_action() -> void:
+	if audio_controller != null:
+		audio_controller.play_menu_confirm()
 	match splash_mode:
 		SplashMode.LEVEL_COMPLETE:
 			_advance_to_next_level()
@@ -870,6 +911,8 @@ func _handle_splash_retry() -> void:
 
 
 func _handle_splash_end_run() -> void:
+	if audio_controller != null:
+		audio_controller.play_menu_confirm()
 	if splash_mode == SplashMode.LEVEL_FAILED:
 		_show_run_complete_splash()
 		return
@@ -965,6 +1008,8 @@ func _toggle_invert_colors() -> void:
 	invert_colors_enabled = not invert_colors_enabled
 	_apply_palette(level)
 	_update_ui()
+	if audio_controller != null:
+		audio_controller.play_invert()
 	queue_redraw()
 
 
@@ -999,6 +1044,10 @@ func _is_marker_intro_active() -> bool:
 
 func _is_goal_clear_active() -> bool:
 	return goal_clear_elapsed < GOAL_CLEAR_DURATION
+
+
+func _is_bonus_pickup_active() -> bool:
+	return bonus_pickup_elapsed < BONUS_PICKUP_DURATION and bonus_pickup_cell.x >= 0
 
 
 func _is_move_animation_active() -> bool:
@@ -1382,6 +1431,8 @@ func _move_menu_focus(direction: Vector2i) -> void:
 		menu_focus_index = posmod(menu_focus_index + step, buttons.size())
 
 	buttons[menu_focus_index].grab_focus()
+	if audio_controller != null:
+		audio_controller.play_menu_move()
 
 
 func _sync_menu_focus(force_first: bool = false) -> void:
@@ -1446,6 +1497,15 @@ func _draw_playfield_trim(draw_area: Rect2) -> void:
 func _draw_bonus_marker(center: Vector2, radius: float, pulse: float, bonus_value: int) -> void:
 	draw_circle(center, radius * (1.04 + pulse * 0.03), _with_alpha(outline_color, 0.24))
 	draw_circle(center, radius, bonus_gain_color if bonus_value > 0 else bonus_loss_color)
+
+
+func _draw_bonus_pickup_effect(center: Vector2, radius: float, bonus_value: int) -> void:
+	var progress: float = clampf(bonus_pickup_elapsed / BONUS_PICKUP_DURATION, 0.0, 1.0)
+	var wave: float = sin(progress * PI)
+	var color: Color = bonus_gain_color if bonus_value > 0 else bonus_loss_color
+	draw_circle(center, radius * (1.12 + wave * 0.26), _with_alpha(color, 0.22 * (1.0 - progress)))
+	draw_arc(center, radius * (1.18 + progress * 0.85), 0.0, TAU, 40, _with_alpha(color.lightened(0.18), 0.95 * (1.0 - progress)), 3.0)
+	draw_arc(center, radius * (0.86 + progress * 0.55), 0.0, TAU, 32, _with_alpha(player_core_color, 0.72 * (1.0 - progress)), 2.0)
 
 
 func _draw_goal_marker(center: Vector2, radius: float, pulse: float) -> void:
@@ -1516,4 +1576,6 @@ func _fail_level_timeout() -> void:
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
 	pending_goal_completion = false
 	_record_level_result(false)
+	if audio_controller != null:
+		audio_controller.play_timeout()
 	_show_time_up_splash()

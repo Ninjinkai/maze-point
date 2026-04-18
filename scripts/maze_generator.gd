@@ -190,12 +190,25 @@ static func _build_bonuses(
 
 	var route_positive_steps: Array[int] = _pick_path_steps(optimal_length, route_penalty_count, rng, used_route_steps)
 	for step_index in route_positive_steps:
+		used_route_steps[step_index] = true
 		var penalty_cell: Vector2i = solution_path[step_index]
 		bonuses.append({
 			"cell": penalty_cell,
 			"value": BONUS_VALUE,
 		})
 		bonus_cells.append(penalty_cell)
+
+	var route_score: int = optimal_length + route_positive_steps.size() * BONUS_VALUE - route_negative_steps.size() * BONUS_VALUE
+	if route_score > 0:
+		var extra_negative_steps: Array[int] = _pick_path_steps(optimal_length, int(ceili(float(route_score) / float(BONUS_VALUE))), rng, used_route_steps)
+		for step_index in extra_negative_steps:
+			used_route_steps[step_index] = true
+			var extra_bonus_cell: Vector2i = solution_path[step_index]
+			bonuses.append({
+				"cell": extra_bonus_cell,
+				"value": -BONUS_VALUE,
+			})
+			bonus_cells.append(extra_bonus_cell)
 
 	var detour_gain_candidates: Array[Dictionary] = []
 	var detour_loss_candidates: Array[Dictionary] = []

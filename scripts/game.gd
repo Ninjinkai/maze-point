@@ -1,8 +1,10 @@
 extends Node2D
 
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
-const TEXT_COLOR := Color("f5f7fb")
-const OUTLINE_COLOR := Color("1a1f2a")
+const BRIGHT_TEXT_COLOR := Color("f7fbff")
+const DARK_TEXT_COLOR := Color("102030")
+const DARK_OUTLINE_COLOR := Color("09111d")
+const LIGHT_OUTLINE_COLOR := Color("eef4ff")
 const AUTO_ADVANCE_SECONDS := 2.8
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
@@ -13,6 +15,7 @@ const BASE_OUTER_MARGIN := 12.0
 const ACTION_ACCEPT := "maze_accept"
 const ACTION_RETRY := "maze_retry"
 const ACTION_END_RUN := "maze_end_run"
+const ACTION_INVERT := "maze_invert"
 
 enum SplashMode {
 	NONE,
@@ -44,10 +47,13 @@ var run_total_score: int = 0
 var run_levels_cleared: int = 0
 var splash_mode: SplashMode = SplashMode.NONE
 var last_viewport_size: Vector2 = Vector2.ZERO
+var invert_colors_enabled: bool = false
 
 var level_bonus_values: Dictionary = {}
 var collected_bonus_cells: Dictionary = {}
 
+var text_color: Color = BRIGHT_TEXT_COLOR
+var outline_color: Color = DARK_OUTLINE_COLOR
 var background_color: Color = Color("101826")
 var background_glow_color: Color = Color("3b4dff")
 var secondary_glow_color: Color = Color("ff5ec7")
@@ -75,6 +81,7 @@ var timer_label: Label
 var retry_button: Button
 var end_run_button: Button
 var splash_action_button: Button
+var invert_button: Button
 var splash_center: CenterContainer
 var top_panel: PanelContainer
 var bottom_panel: PanelContainer
@@ -116,6 +123,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed(ACTION_ACCEPT):
 		if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE:
 			_handle_splash_action()
+		return
+
+	if event.is_action_pressed(ACTION_INVERT):
+		_toggle_invert_colors()
 		return
 
 	if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or completed:
@@ -180,7 +191,7 @@ func _draw() -> void:
 	var node_radius: float = clampf(cell_size * 0.08, 3.0, 7.0)
 	var player_radius: float = clampf(cell_size * 0.19, 8.0, 17.0)
 	var goal_radius: float = clampf(cell_size * 0.21, 9.0, 18.0)
-	var bonus_radius: float = clampf(cell_size * 0.12, 5.0, 11.0)
+	var bonus_radius: float = clampf(cell_size * 0.18, 9.0, 18.0)
 	var pulse: float = 0.84 + 0.16 * sin(pulse_time * 4.0)
 
 	for y in range(maze_height):
@@ -203,7 +214,9 @@ func _draw() -> void:
 
 	for node_y in range(maze_height):
 		for node_x in range(maze_width):
-			draw_circle(_cell_to_screen(Vector2i(node_x, node_y)), node_radius, node_color)
+			var node_center: Vector2 = _cell_to_screen(Vector2i(node_x, node_y))
+			draw_circle(node_center, node_radius + 1.6, _with_alpha(playfield_trim_color, 0.34))
+			draw_circle(node_center, node_radius, node_color)
 
 	for bonus_cell_variant in level_bonus_values.keys():
 		var bonus_cell: Vector2i = bonus_cell_variant
@@ -369,7 +382,8 @@ func _advance_to_next_level() -> void:
 func _update_ui() -> void:
 	maze_label.text = "Maze %d" % level
 	score_label.text = "Score %d" % _current_level_score()
-	timer_label.text = "Time %ds / %ds" % [_current_elapsed_seconds(), par_time_seconds]
+	timer_label.text = "Time %ds | Par %ds" % [_current_elapsed_seconds(), par_time_seconds]
+	invert_button.text = _get_invert_button_text()
 
 
 func _update_completion_splash() -> void:
@@ -377,11 +391,12 @@ func _update_completion_splash() -> void:
 	splash_title_label.text = "Maze %d cleared" % level
 	splash_score_label.text = "Player score: %d  |  Time: %ds" % [_current_level_score(), _current_elapsed_seconds()]
 	splash_optimal_label.text = "Optimal score: %d  |  Par time: %ds" % [perfect_score, par_time_seconds]
-	splash_retries_label.text = "Retries: %d  |  Bonus: -%d" % [level_retries, collected_bonus_total]
+	splash_retries_label.text = "Retries: %d" % level_retries
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
-	splash_caption_label.text = "%s Press Enter or A when you're ready." % _get_star_caption(stars)
+	splash_caption_label.visible = false
+	splash_caption_label.text = ""
 	splash_action_button.text = _get_splash_action_text()
 	splash_action_button.visible = true
 	_set_splash_visible(true)
@@ -397,7 +412,8 @@ func _show_run_complete_splash() -> void:
 	splash_optimal_label.text = "Mazes cleared: %d" % run_levels_cleared
 	splash_retries_label.text = "Current maze: %d  |  Time: %ds" % [level, _current_elapsed_seconds()]
 	splash_stars_label.visible = false
-	splash_caption_label.text = "Press Enter or A when you're ready to start again."
+	splash_caption_label.visible = false
+	splash_caption_label.text = ""
 	splash_action_button.text = _get_splash_action_text()
 	splash_action_button.visible = true
 	_set_splash_visible(true)
@@ -547,25 +563,36 @@ func _build_ui() -> void:
 	ui.add_child(top_panel)
 
 	var top_content: VBoxContainer = VBoxContainer.new()
-	top_content.add_theme_constant_override("separation", 8)
+	top_content.add_theme_constant_override("separation", 10)
 	top_panel.add_child(top_content)
 
 	var top_row: HBoxContainer = HBoxContainer.new()
-	top_row.add_theme_constant_override("separation", 24)
+	top_row.add_theme_constant_override("separation", 14)
 	top_content.add_child(top_row)
 
 	maze_label = Label.new()
+	maze_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	maze_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_row.add_child(maze_label)
 
 	score_label = Label.new()
-	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	score_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_row.add_child(score_label)
 
+	var detail_row: HBoxContainer = HBoxContainer.new()
+	detail_row.add_theme_constant_override("separation", 14)
+	top_content.add_child(detail_row)
+
 	timer_label = Label.new()
 	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	top_content.add_child(timer_label)
+	timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_row.add_child(timer_label)
+
+	invert_button = _make_button(_get_invert_button_text())
+	invert_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	invert_button.pressed.connect(_toggle_invert_colors)
+	detail_row.add_child(invert_button)
 
 	bottom_panel = PanelContainer.new()
 	bottom_panel.anchor_top = 1.0
@@ -619,6 +646,7 @@ func _build_ui() -> void:
 
 	splash_caption_label = Label.new()
 	splash_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	splash_caption_label.visible = false
 	splash_content.add_child(splash_caption_label)
 
 	splash_action_button = _make_button(_get_splash_action_text())
@@ -652,6 +680,8 @@ func _configure_input_actions() -> void:
 	_ensure_joypad_action(ACTION_RETRY, JOY_BUTTON_Y)
 	_ensure_key_action(ACTION_END_RUN, KEY_ESCAPE)
 	_ensure_joypad_action(ACTION_END_RUN, JOY_BUTTON_START)
+	_ensure_key_action(ACTION_INVERT, KEY_I)
+	_ensure_joypad_action(ACTION_INVERT, JOY_BUTTON_X)
 
 
 func _ensure_key_action(action_name: String, keycode: Key) -> void:
@@ -680,6 +710,19 @@ func _get_splash_action_text() -> String:
 	return "Continue [Enter / A]"
 
 
+func _get_invert_button_text() -> String:
+	if invert_colors_enabled:
+		return "Invert on [I / X]"
+	return "Invert off [I / X]"
+
+
+func _toggle_invert_colors() -> void:
+	invert_colors_enabled = not invert_colors_enabled
+	_apply_palette(level)
+	_update_ui()
+	queue_redraw()
+
+
 func _make_button(text: String) -> Button:
 	var button: Button = Button.new()
 	button.text = text
@@ -695,26 +738,53 @@ func _make_splash_stat_label() -> Label:
 
 func _apply_palette(level_value: int) -> void:
 	var difficulty: float = clampf(float(level_value - 1) / 14.0, 0.0, 1.0)
-	background_color = Color.from_hsv(0.62 - 0.07 * difficulty, 0.5, 0.12 + 0.03 * difficulty)
-	background_glow_color = Color.from_hsv(0.72 - 0.1 * difficulty, 0.58, 0.92)
-	secondary_glow_color = Color.from_hsv(0.92 - 0.14 * difficulty, 0.52 + 0.12 * difficulty, 0.94)
-	playfield_color = Color.from_hsv(0.6 - 0.06 * difficulty, 0.34 + 0.08 * difficulty, 0.22 + 0.05 * difficulty)
-	playfield_trim_color = Color.from_hsv(0.14 + 0.04 * difficulty, 0.48, 0.86)
-	wall_color = Color.from_hsv(0.56 - 0.1 * difficulty, 0.28 + 0.2 * difficulty, 0.86 - 0.1 * difficulty)
-	node_color = Color.from_hsv(0.58 - 0.03 * difficulty, 0.08 + 0.06 * difficulty, 0.96)
-	goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.65, 0.98)
-	bonus_color = Color.from_hsv(0.34 - 0.05 * difficulty, 0.54, 0.92)
-	bonus_inner_color = Color.from_hsv(0.18 + 0.03 * difficulty, 0.08, 1.0)
-	player_color = Color.from_hsv(0.5 - 0.07 * difficulty, 0.6, 0.98)
-	player_core_color = Color.from_hsv(0.12 + 0.03 * difficulty, 0.12, 1.0)
-	panel_color = playfield_color.lightened(0.1)
-	panel_border_color = playfield_trim_color
-	retry_button_color = wall_color.darkened(0.12)
-	retry_button_hover_color = wall_color.lightened(0.06)
-	retry_button_pressed_color = player_color.darkened(0.08)
-	end_button_color = secondary_glow_color.darkened(0.2)
-	end_button_hover_color = secondary_glow_color.darkened(0.08)
-	end_button_pressed_color = goal_color.darkened(0.14)
+	var accent_hue: float = lerpf(0.58, 0.03, difficulty)
+	if invert_colors_enabled:
+		text_color = DARK_TEXT_COLOR
+		outline_color = LIGHT_OUTLINE_COLOR
+		background_color = Color("eef4fb")
+		background_glow_color = Color.from_hsv(accent_hue, 0.2, 0.95)
+		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.1, 1.0), 0.26, 0.84)
+		playfield_color = Color("ffffff")
+		playfield_trim_color = Color.from_hsv(accent_hue, 0.42, 0.62)
+		wall_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.46, 0.34)
+		node_color = Color("6f8098")
+		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.74, 0.9)
+		bonus_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.72, 0.82)
+		bonus_inner_color = Color("fff8f6")
+		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.58, 0.82)
+		player_core_color = Color("ffe8b6")
+		panel_color = Color("e6eef8")
+		panel_border_color = playfield_trim_color
+		retry_button_color = Color("d8e3f2")
+		retry_button_hover_color = Color("c8d9ee")
+		retry_button_pressed_color = Color("b7cce6")
+		end_button_color = Color("d5def0")
+		end_button_hover_color = Color("c3d1ea")
+		end_button_pressed_color = Color("b2c6e5")
+	else:
+		text_color = BRIGHT_TEXT_COLOR
+		outline_color = DARK_OUTLINE_COLOR
+		background_color = Color("09111d")
+		background_glow_color = Color.from_hsv(accent_hue, 0.34, 0.44)
+		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.13, 1.0), 0.28, 0.72)
+		playfield_color = Color("142032")
+		playfield_trim_color = Color.from_hsv(accent_hue, 0.44, 0.92)
+		wall_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.42, 0.82)
+		node_color = Color("d7e3f4")
+		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.72, 0.98)
+		bonus_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
+		bonus_inner_color = Color("fff4ef")
+		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.56, 0.98)
+		player_core_color = Color("ffe7b3")
+		panel_color = Color("1b2a40")
+		panel_border_color = playfield_trim_color
+		retry_button_color = Color("314969")
+		retry_button_hover_color = Color("3e5a81")
+		retry_button_pressed_color = Color("5876a6")
+		end_button_color = Color("463c7a")
+		end_button_hover_color = Color("594d96")
+		end_button_pressed_color = Color("6b5fb0")
 	_apply_palette_to_ui()
 
 
@@ -727,11 +797,11 @@ func _apply_palette_to_ui() -> void:
 	splash_panel.add_theme_stylebox_override("panel", _make_panel_style(panel_color.lightened(0.06), panel_border_color.lightened(0.08), goal_color))
 
 	maze_label.add_theme_color_override("font_color", player_color)
-	maze_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	maze_label.add_theme_color_override("font_outline_color", outline_color)
 	score_label.add_theme_color_override("font_color", goal_color)
-	score_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	score_label.add_theme_color_override("font_outline_color", outline_color)
 	timer_label.add_theme_color_override("font_color", bonus_color)
-	timer_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	timer_label.add_theme_color_override("font_outline_color", outline_color)
 
 	retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
 	retry_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
@@ -739,21 +809,24 @@ func _apply_palette_to_ui() -> void:
 	end_run_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
 	end_run_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
 	end_run_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
+	invert_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
+	invert_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
+	invert_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
 	splash_action_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
 	splash_action_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
 	splash_action_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
 
 	splash_title_label.add_theme_color_override("font_color", goal_color)
-	splash_title_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	splash_title_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_score_label.add_theme_color_override("font_color", player_color)
-	splash_score_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	splash_score_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_optimal_label.add_theme_color_override("font_color", bonus_color)
-	splash_optimal_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
-	splash_retries_label.add_theme_color_override("font_color", TEXT_COLOR)
-	splash_retries_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
-	splash_stars_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	splash_optimal_label.add_theme_color_override("font_outline_color", outline_color)
+	splash_retries_label.add_theme_color_override("font_color", text_color)
+	splash_retries_label.add_theme_color_override("font_outline_color", outline_color)
+	splash_stars_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_caption_label.add_theme_color_override("font_color", secondary_glow_color.lightened(0.2))
-	splash_caption_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	splash_caption_label.add_theme_color_override("font_outline_color", outline_color)
 
 
 func _refresh_ui_layout() -> void:
@@ -787,34 +860,35 @@ func _refresh_ui_layout() -> void:
 
 func _apply_ui_metrics() -> void:
 	var scale: float = _get_ui_scale()
-	var header_size: int = int(round(52.0 * scale))
-	var timer_size: int = int(round(38.0 * scale))
-	var button_size: int = int(round(30.0 * scale))
-	var splash_title_size: int = int(round(58.0 * scale))
-	var splash_stat_size: int = int(round(34.0 * scale))
-	var splash_star_size: int = int(round(72.0 * scale))
+	var header_size: int = int(round(60.0 * scale))
+	var detail_size: int = int(round(42.0 * scale))
+	var button_size: int = int(round(28.0 * scale))
+	var splash_title_size: int = int(round(68.0 * scale))
+	var splash_stat_size: int = int(round(42.0 * scale))
+	var splash_star_size: int = int(round(84.0 * scale))
 	var splash_caption_size: int = int(round(32.0 * scale))
 
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(score_label, header_size, 7, goal_color)
 	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_apply_label_style(timer_label, timer_size, 6, bonus_color)
+	_apply_label_style(timer_label, detail_size, 6, bonus_color)
 	timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
 	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
 	_apply_label_style(splash_optimal_label, splash_stat_size, 6, bonus_color)
-	_apply_label_style(splash_retries_label, splash_stat_size, 6, TEXT_COLOR)
+	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
 	_apply_label_style(splash_caption_label, splash_caption_size, 6, secondary_glow_color.lightened(0.2))
 
 	splash_stars_label.add_theme_font_override("font", ui_font)
 	splash_stars_label.add_theme_font_size_override("font_size", splash_star_size)
 	splash_stars_label.add_theme_constant_override("outline_size", 8)
-	splash_stars_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	splash_stars_label.add_theme_color_override("font_outline_color", outline_color)
 
 	_apply_button_style_metrics(retry_button, button_size)
 	_apply_button_style_metrics(end_run_button, button_size)
+	_apply_button_style_metrics(invert_button, button_size)
 	_apply_button_style_metrics(splash_action_button, button_size)
 
 
@@ -823,16 +897,16 @@ func _apply_label_style(label: Label, font_size: int, outline_size: int, color: 
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_constant_override("outline_size", outline_size)
 	label.add_theme_color_override("font_color", color)
-	label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	label.add_theme_color_override("font_outline_color", outline_color)
 
 
 func _apply_button_style_metrics(button: Button, font_size: int) -> void:
-	button.custom_minimum_size = Vector2(0.0, round(86.0 * _get_ui_scale()))
+	button.custom_minimum_size = Vector2(0.0, round(96.0 * _get_ui_scale()))
 	button.add_theme_font_override("font", ui_font)
 	button.add_theme_font_size_override("font_size", font_size)
 	button.add_theme_constant_override("outline_size", 5)
-	button.add_theme_color_override("font_color", TEXT_COLOR)
-	button.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+	button.add_theme_color_override("font_color", text_color)
+	button.add_theme_color_override("font_outline_color", outline_color)
 
 
 func _get_ui_scale() -> float:
@@ -923,15 +997,13 @@ func _draw_background_glow(viewport_rect: Rect2) -> void:
 
 
 func _draw_playfield_trim(draw_area: Rect2) -> void:
-	var corner_radius: float = clampf(minf(draw_area.size.x, draw_area.size.y) * 0.04, 18.0, 38.0)
-	draw_circle(draw_area.position + Vector2(corner_radius, corner_radius), corner_radius, _with_alpha(playfield_trim_color, 0.14))
-	draw_circle(draw_area.position + Vector2(draw_area.size.x - corner_radius, draw_area.size.y - corner_radius), corner_radius, _with_alpha(background_glow_color, 0.1))
+	draw_rect(draw_area.grow(2.0), _with_alpha(playfield_trim_color, 0.58), false, 3.0)
 
 
 func _draw_bonus_marker(center: Vector2, radius: float, pulse: float, bonus_value: int) -> void:
-	var points: PackedVector2Array = _make_regular_polygon(center, radius * (0.98 + pulse * 0.08), 6, PI / 6.0)
-	draw_colored_polygon(points, bonus_color)
-	draw_circle(center, radius * 0.42, bonus_inner_color)
+	draw_circle(center, radius * (1.04 + pulse * 0.03), _with_alpha(outline_color, 0.24))
+	draw_circle(center, radius, bonus_color)
+	draw_circle(center, radius * 0.84, bonus_inner_color)
 	_draw_bonus_value(center, radius, bonus_value)
 
 
@@ -943,12 +1015,15 @@ func _draw_goal_marker(center: Vector2, radius: float, pulse: float) -> void:
 
 
 func _draw_player_marker(center: Vector2, radius: float, pulse: float) -> void:
-	var diamond_points: PackedVector2Array = _make_regular_polygon(center, radius, 4, PI / 4.0)
-	var inner_points: PackedVector2Array = _make_regular_polygon(center, radius * 0.44, 4, PI / 4.0)
-	draw_colored_polygon(diamond_points, player_color)
-	draw_colored_polygon(inner_points, player_core_color)
-	draw_circle(center + Vector2(radius * 0.5, -radius * 0.46), radius * 0.18, _with_alpha(secondary_glow_color.lightened(0.2), 0.95))
-	draw_arc(center, radius * (1.08 + pulse * 0.15), PI * 1.05, PI * 2.1, 28, _with_alpha(player_color.lightened(0.22), 0.92), 3.0)
+	draw_circle(center, radius * (1.08 + pulse * 0.04), _with_alpha(player_color.lightened(0.2), 0.18))
+	draw_circle(center, radius, player_core_color)
+	draw_circle(center, radius * 0.92, player_color)
+	var eye_offset_x: float = radius * 0.34
+	var eye_offset_y: float = radius * 0.18
+	var eye_radius: float = maxf(radius * 0.08, 1.8)
+	draw_circle(center + Vector2(-eye_offset_x, -eye_offset_y), eye_radius, outline_color)
+	draw_circle(center + Vector2(eye_offset_x, -eye_offset_y), eye_radius, outline_color)
+	draw_arc(center + Vector2(0.0, radius * 0.04), radius * 0.42, PI * 0.18, PI * 0.82, 20, outline_color, maxf(radius * 0.11, 2.0))
 
 
 func _make_regular_polygon(center: Vector2, radius: float, sides: int, rotation: float) -> PackedVector2Array:
@@ -988,31 +1063,25 @@ func _calculate_par_time_seconds() -> int:
 
 
 func _draw_bonus_value(center: Vector2, radius: float, bonus_value: int) -> void:
-	var font_size: int = maxi(18, mini(32, int(round(radius * 2.1))))
-	var label_width: float = radius * 6.8
-	var label_height: float = font_size * 1.35
-	var label_rect: Rect2 = Rect2(
-		center + Vector2(-label_width * 0.5, radius * 1.55),
-		Vector2(label_width, label_height)
-	)
-	draw_rect(label_rect, _with_alpha(OUTLINE_COLOR, 0.86), true)
-	draw_rect(label_rect.grow(-2.0), _with_alpha(panel_color.lightened(0.16), 0.96), true)
-	var baseline: Vector2 = label_rect.position + Vector2(0.0, label_height * 0.78)
+	var font_size: int = maxi(15, mini(28, int(round(radius * 1.65))))
+	var label_width: float = radius * 2.4
+	var baseline: Vector2 = center + Vector2(-label_width * 0.5, font_size * 0.34)
+	var bonus_text: String = "%d" % bonus_value
 	draw_string(
 		ui_font,
-		baseline + Vector2(0.0, 1.0),
-		"-%d" % bonus_value,
+		baseline + Vector2(0.0, 1.2),
+		bonus_text,
 		HORIZONTAL_ALIGNMENT_CENTER,
 		label_width,
 		font_size,
-		OUTLINE_COLOR
+		outline_color
 	)
 	draw_string(
 		ui_font,
 		baseline,
-		"-%d" % bonus_value,
+		bonus_text,
 		HORIZONTAL_ALIGNMENT_CENTER,
 		label_width,
 		font_size,
-		TEXT_COLOR
+		text_color
 	)

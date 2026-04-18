@@ -3,13 +3,13 @@ extends Node2D
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
 const TEXT_COLOR := Color("f5f7fb")
 const OUTLINE_COLOR := Color("1a1f2a")
-const TOP_HUD_HEIGHT := 108.0
-const BOTTOM_HUD_HEIGHT := 108.0
-const OUTER_MARGIN := 18.0
 const AUTO_ADVANCE_SECONDS := 2.8
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
 const BASE_LEVEL_AREA := 24.0
+const BASE_TOP_HUD_HEIGHT := 180.0
+const BASE_BOTTOM_HUD_HEIGHT := 150.0
+const BASE_OUTER_MARGIN := 12.0
 
 enum SplashMode {
 	NONE,
@@ -40,6 +40,7 @@ var joypad_y_state: int = 0
 var run_total_score: int = 0
 var run_levels_cleared: int = 0
 var splash_mode: SplashMode = SplashMode.NONE
+var last_viewport_size: Vector2 = Vector2.ZERO
 
 var level_bonus_values: Dictionary = {}
 var collected_bonus_cells: Dictionary = {}
@@ -81,18 +82,25 @@ var splash_retries_label: Label
 var splash_stars_label: Label
 var splash_caption_label: Label
 var advance_timer: Timer
+var ui_font: Font
 
 
 func _ready() -> void:
 	randomize()
+	_load_ui_font()
 	_apply_palette(level)
 	_build_ui()
 	_build_advance_timer()
+	_refresh_ui_layout()
 	_start_new_run()
 
 
 func _process(delta: float) -> void:
 	pulse_time += delta
+	var viewport_size: Vector2 = get_viewport_rect().size
+	if viewport_size != last_viewport_size:
+		last_viewport_size = viewport_size
+		_refresh_ui_layout()
 	if splash_mode == SplashMode.NONE and not completed:
 		level_elapsed_time += delta
 		_update_ui()
@@ -100,7 +108,7 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if splash_mode == SplashMode.RUN_COMPLETE or completed:
+	if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or completed:
 		return
 
 	if event is InputEventScreenTouch:
@@ -329,7 +337,6 @@ func _complete_level() -> void:
 	_set_footer_enabled(false)
 	_update_ui()
 	_update_completion_splash()
-	advance_timer.start(AUTO_ADVANCE_SECONDS)
 
 
 func _advance_to_next_level() -> void:
@@ -356,8 +363,9 @@ func _update_completion_splash() -> void:
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
-	splash_caption_label.text = _get_star_caption(stars)
-	splash_action_button.visible = false
+	splash_caption_label.text = "%s Tap continue when you're ready." % _get_star_caption(stars)
+	splash_action_button.text = "Continue"
+	splash_action_button.visible = true
 	_set_splash_visible(true)
 
 
@@ -372,6 +380,7 @@ func _show_run_complete_splash() -> void:
 	splash_retries_label.text = "Current maze: %d  |  Time: %ds" % [level, _current_elapsed_seconds()]
 	splash_stars_label.visible = false
 	splash_caption_label.text = "Start a new run when you're ready."
+	splash_action_button.text = "Start a new run"
 	splash_action_button.visible = true
 	_set_splash_visible(true)
 
@@ -485,8 +494,8 @@ func _handle_joypad_axis(value: float, is_horizontal: bool) -> void:
 func _get_draw_area() -> Rect2:
 	var viewport_size: Vector2 = get_viewport_rect().size
 	return Rect2(
-		Vector2(OUTER_MARGIN, TOP_HUD_HEIGHT),
-		viewport_size - Vector2(OUTER_MARGIN * 2.0, TOP_HUD_HEIGHT + BOTTOM_HUD_HEIGHT)
+		Vector2(_get_outer_margin(), _get_top_hud_height()),
+		viewport_size - Vector2(_get_outer_margin() * 2.0, _get_top_hud_height() + _get_bottom_hud_height())
 	)
 
 
@@ -517,45 +526,33 @@ func _build_ui() -> void:
 
 	top_panel = PanelContainer.new()
 	top_panel.anchor_right = 1.0
-	top_panel.offset_left = 12.0
-	top_panel.offset_top = 12.0
-	top_panel.offset_right = -12.0
-	top_panel.offset_bottom = TOP_HUD_HEIGHT - 12.0
 	ui.add_child(top_panel)
 
-	var top_content: HBoxContainer = HBoxContainer.new()
-	top_content.alignment = BoxContainer.ALIGNMENT_CENTER
-	top_content.add_theme_constant_override("separation", 24)
+	var top_content: VBoxContainer = VBoxContainer.new()
+	top_content.add_theme_constant_override("separation", 8)
 	top_panel.add_child(top_content)
+
+	var top_row: HBoxContainer = HBoxContainer.new()
+	top_row.add_theme_constant_override("separation", 24)
+	top_content.add_child(top_row)
 
 	maze_label = Label.new()
 	maze_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	maze_label.add_theme_font_size_override("font_size", 34)
-	maze_label.add_theme_constant_override("outline_size", 5)
-	top_content.add_child(maze_label)
+	top_row.add_child(maze_label)
 
 	score_label = Label.new()
 	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	score_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	score_label.add_theme_font_size_override("font_size", 34)
-	score_label.add_theme_constant_override("outline_size", 5)
-	top_content.add_child(score_label)
+	top_row.add_child(score_label)
 
 	timer_label = Label.new()
-	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	timer_label.add_theme_font_size_override("font_size", 28)
-	timer_label.add_theme_constant_override("outline_size", 4)
+	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	top_content.add_child(timer_label)
 
 	bottom_panel = PanelContainer.new()
 	bottom_panel.anchor_top = 1.0
 	bottom_panel.anchor_right = 1.0
 	bottom_panel.anchor_bottom = 1.0
-	bottom_panel.offset_left = 12.0
-	bottom_panel.offset_top = -BOTTOM_HUD_HEIGHT + 12.0
-	bottom_panel.offset_right = -12.0
-	bottom_panel.offset_bottom = -12.0
 	ui.add_child(bottom_panel)
 
 	var bottom_content: HBoxContainer = HBoxContainer.new()
@@ -575,10 +572,6 @@ func _build_ui() -> void:
 	splash_panel.anchor_top = 0.5
 	splash_panel.anchor_right = 0.5
 	splash_panel.anchor_bottom = 0.5
-	splash_panel.offset_left = -240.0
-	splash_panel.offset_top = -236.0
-	splash_panel.offset_right = 240.0
-	splash_panel.offset_bottom = 236.0
 	splash_panel.visible = false
 	ui.add_child(splash_panel)
 
@@ -588,8 +581,6 @@ func _build_ui() -> void:
 
 	splash_title_label = Label.new()
 	splash_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	splash_title_label.add_theme_font_size_override("font_size", 36)
-	splash_title_label.add_theme_constant_override("outline_size", 6)
 	splash_content.add_child(splash_title_label)
 
 	splash_score_label = _make_splash_stat_label()
@@ -603,18 +594,14 @@ func _build_ui() -> void:
 
 	splash_stars_label = Label.new()
 	splash_stars_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	splash_stars_label.add_theme_font_size_override("font_size", 42)
-	splash_stars_label.add_theme_constant_override("outline_size", 6)
 	splash_content.add_child(splash_stars_label)
 
 	splash_caption_label = Label.new()
 	splash_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	splash_caption_label.add_theme_font_size_override("font_size", 24)
-	splash_caption_label.add_theme_constant_override("outline_size", 5)
 	splash_content.add_child(splash_caption_label)
 
 	splash_action_button = _make_button("Start a new run")
-	splash_action_button.pressed.connect(_start_new_run)
+	splash_action_button.pressed.connect(_handle_splash_action)
 	splash_content.add_child(splash_action_button)
 
 	_apply_palette_to_ui()
@@ -627,23 +614,24 @@ func _build_advance_timer() -> void:
 	add_child(advance_timer)
 
 
+func _handle_splash_action() -> void:
+	match splash_mode:
+		SplashMode.LEVEL_COMPLETE:
+			_advance_to_next_level()
+		SplashMode.RUN_COMPLETE:
+			_start_new_run()
+
+
 func _make_button(text: String) -> Button:
 	var button: Button = Button.new()
 	button.text = text
-	button.custom_minimum_size = Vector2(0, 66)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	button.add_theme_font_size_override("font_size", 22)
-	button.add_theme_color_override("font_color", TEXT_COLOR)
-	button.add_theme_constant_override("outline_size", 4)
-	button.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
 	return button
 
 
 func _make_splash_stat_label() -> Label:
 	var label: Label = Label.new()
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 24)
-	label.add_theme_constant_override("outline_size", 4)
 	return label
 
 
@@ -708,6 +696,112 @@ func _apply_palette_to_ui() -> void:
 	splash_stars_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
 	splash_caption_label.add_theme_color_override("font_color", secondary_glow_color.lightened(0.2))
 	splash_caption_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+
+
+func _refresh_ui_layout() -> void:
+	if top_panel == null:
+		return
+
+	var margin: float = _get_outer_margin()
+	var top_height: float = _get_top_hud_height()
+	var bottom_height: float = _get_bottom_hud_height()
+	var splash_width: float = minf(get_viewport_rect().size.x - margin * 2.0, 760.0 * _get_ui_scale())
+	var splash_height: float = minf(get_viewport_rect().size.y - margin * 3.0, 820.0 * _get_ui_scale())
+
+	top_panel.offset_left = margin
+	top_panel.offset_top = margin
+	top_panel.offset_right = -margin
+	top_panel.offset_bottom = top_height - margin
+
+	bottom_panel.offset_left = margin
+	bottom_panel.offset_top = -bottom_height + margin
+	bottom_panel.offset_right = -margin
+	bottom_panel.offset_bottom = -margin
+
+	splash_panel.offset_left = -splash_width * 0.5
+	splash_panel.offset_top = -splash_height * 0.5
+	splash_panel.offset_right = splash_width * 0.5
+	splash_panel.offset_bottom = splash_height * 0.5
+
+	_apply_ui_metrics()
+
+
+func _apply_ui_metrics() -> void:
+	var scale: float = _get_ui_scale()
+	var header_size: int = int(round(52.0 * scale))
+	var timer_size: int = int(round(38.0 * scale))
+	var button_size: int = int(round(30.0 * scale))
+	var splash_title_size: int = int(round(58.0 * scale))
+	var splash_stat_size: int = int(round(34.0 * scale))
+	var splash_star_size: int = int(round(72.0 * scale))
+	var splash_caption_size: int = int(round(32.0 * scale))
+
+	_apply_label_style(maze_label, header_size, 7, player_color)
+	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_apply_label_style(score_label, header_size, 7, goal_color)
+	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_apply_label_style(timer_label, timer_size, 6, bonus_color)
+	timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+
+	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
+	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
+	_apply_label_style(splash_optimal_label, splash_stat_size, 6, bonus_color)
+	_apply_label_style(splash_retries_label, splash_stat_size, 6, TEXT_COLOR)
+	_apply_label_style(splash_caption_label, splash_caption_size, 6, secondary_glow_color.lightened(0.2))
+
+	splash_stars_label.add_theme_font_override("font", ui_font)
+	splash_stars_label.add_theme_font_size_override("font_size", splash_star_size)
+	splash_stars_label.add_theme_constant_override("outline_size", 8)
+	splash_stars_label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+
+	_apply_button_style_metrics(retry_button, button_size)
+	_apply_button_style_metrics(end_run_button, button_size)
+	_apply_button_style_metrics(splash_action_button, button_size)
+
+
+func _apply_label_style(label: Label, font_size: int, outline_size: int, color: Color) -> void:
+	label.add_theme_font_override("font", ui_font)
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_constant_override("outline_size", outline_size)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+
+
+func _apply_button_style_metrics(button: Button, font_size: int) -> void:
+	button.custom_minimum_size = Vector2(0.0, round(86.0 * _get_ui_scale()))
+	button.add_theme_font_override("font", ui_font)
+	button.add_theme_font_size_override("font_size", font_size)
+	button.add_theme_constant_override("outline_size", 5)
+	button.add_theme_color_override("font_color", TEXT_COLOR)
+	button.add_theme_color_override("font_outline_color", OUTLINE_COLOR)
+
+
+func _get_ui_scale() -> float:
+	var viewport_size: Vector2 = get_viewport_rect().size
+	return clampf(minf(viewport_size.x / 1080.0, viewport_size.y / 1920.0), 0.92, 1.45)
+
+
+func _get_top_hud_height() -> float:
+	return BASE_TOP_HUD_HEIGHT * _get_ui_scale()
+
+
+func _get_bottom_hud_height() -> float:
+	return BASE_BOTTOM_HUD_HEIGHT * _get_ui_scale()
+
+
+func _get_outer_margin() -> float:
+	return BASE_OUTER_MARGIN * _get_ui_scale()
+
+
+func _load_ui_font() -> void:
+	var font_bytes: PackedByteArray = FileAccess.get_file_as_bytes("res://assets/fonts/Fredoka.ttf")
+	if font_bytes.is_empty():
+		ui_font = ThemeDB.fallback_font
+		return
+
+	var font_file: FontFile = FontFile.new()
+	font_file.data = font_bytes
+	ui_font = font_file
 
 
 func _make_panel_style(bg_color: Color, border_color: Color, shadow_color: Color) -> StyleBoxFlat:
@@ -776,9 +870,9 @@ func _draw_playfield_trim(draw_area: Rect2) -> void:
 
 
 func _draw_bonus_marker(center: Vector2, radius: float, pulse: float, bonus_value: int) -> void:
-	var points: PackedVector2Array = _make_regular_polygon(center, radius * (0.9 + pulse * 0.08), 6, PI / 6.0)
+	var points: PackedVector2Array = _make_regular_polygon(center, radius * (0.98 + pulse * 0.08), 6, PI / 6.0)
 	draw_colored_polygon(points, bonus_color)
-	draw_circle(center, radius * 0.35, bonus_inner_color)
+	draw_circle(center, radius * 0.42, bonus_inner_color)
 	_draw_bonus_value(center, radius, bonus_value)
 
 
@@ -835,13 +929,28 @@ func _calculate_par_time_seconds() -> int:
 
 
 func _draw_bonus_value(center: Vector2, radius: float, bonus_value: int) -> void:
-	var font: Font = ThemeDB.fallback_font
-	var font_size: int = maxi(14, int(round(radius * 1.35)))
-	var label_width: float = radius * 6.0
-	var label_position: Vector2 = center + Vector2(-label_width * 0.5, radius * 2.15 + float(font_size) * 0.35)
+	var font_size: int = maxi(18, mini(32, int(round(radius * 2.1))))
+	var label_width: float = radius * 6.8
+	var label_height: float = font_size * 1.35
+	var label_rect: Rect2 = Rect2(
+		center + Vector2(-label_width * 0.5, radius * 1.55),
+		Vector2(label_width, label_height)
+	)
+	draw_rect(label_rect, _with_alpha(OUTLINE_COLOR, 0.86), true)
+	draw_rect(label_rect.grow(-2.0), _with_alpha(panel_color.lightened(0.16), 0.96), true)
+	var baseline: Vector2 = label_rect.position + Vector2(0.0, label_height * 0.78)
 	draw_string(
-		font,
-		label_position,
+		ui_font,
+		baseline + Vector2(0.0, 1.0),
+		"-%d" % bonus_value,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		label_width,
+		font_size,
+		OUTLINE_COLOR
+	)
+	draw_string(
+		ui_font,
+		baseline,
 		"-%d" % bonus_value,
 		HORIZONTAL_ALIGNMENT_CENTER,
 		label_width,

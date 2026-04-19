@@ -3,6 +3,11 @@ extends Node2D
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
 const ProceduralAudioScript = preload("res://scripts/procedural_audio.gd")
 const LocalizationScript = preload("res://scripts/localization_data.gd")
+const ProgressionScript = preload("res://scripts/game/game_progression.gd")
+const InputScript = preload("res://scripts/game/game_input.gd")
+const PersistenceScript = preload("res://scripts/game/game_persistence.gd")
+const UiStylesScript = preload("res://scripts/game/game_ui_styles.gd")
+const RendererScript = preload("res://scripts/game/game_renderer.gd")
 const COMPANY_LOGO_PATH := "res://assets/branding/SlopwAIr_logo_vector.png"
 const SAVE_FILE_PATH := "user://maze_point_settings.cfg"
 const MAX_TRACKED_VALUE := 999999999
@@ -25,7 +30,7 @@ const JOYPAD_TRIGGER := 0.72
 const BASE_TOP_HUD_HEIGHT := 180.0
 const BASE_BOTTOM_HUD_HEIGHT := 150.0
 const BASE_OUTER_MARGIN := 12.0
-const LEVEL_DIMENSION_PROFILES := [
+const LEVEL_DIMENSION_PROFILES: Array[Vector2i] = [
 	Vector2i(4, 4),
 	Vector2i(4, 5),
 	Vector2i(5, 5),
@@ -165,6 +170,7 @@ var ui_font: Font
 var multilingual_ui_font: Font
 var company_logo_texture: Texture2D
 var audio_controller
+var renderer := RendererScript.new()
 var content_fade_elapsed: float = CONTENT_FADE_DURATION
 var content_fade_direction: int = 0
 var pending_transition_action: TransitionAction = TransitionAction.NONE
@@ -348,23 +354,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _draw() -> void:
-	var viewport_rect: Rect2 = get_viewport_rect()
-	draw_rect(Rect2(Vector2.ZERO, viewport_rect.size), background_color, true)
-	_draw_background_glow(viewport_rect)
-
-	if grid_width <= 0 or grid_height <= 0:
-		return
-
-	var draw_area: Rect2 = _get_draw_area()
-	draw_rect(draw_area, playfield_color, true)
-	_draw_playfield_trim(draw_area)
-
-	var cell_size: float = _get_cell_size()
-	var origin: Vector2 = _get_grid_origin(cell_size)
-	_draw_grid_cells(origin, cell_size)
-	_draw_goal_overlay(cell_size)
-	_draw_start_overlay(cell_size)
-	_draw_player_overlay(cell_size)
+	renderer.draw(self)
 
 
 func _start_new_run() -> void:
@@ -432,8 +422,8 @@ func _generate_level_internal(reuse_current_profile: bool = false, hide_splash_b
 		_set_splash_visible(false)
 
 	if not reuse_current_profile:
-		var dimensions: Vector2i = _get_level_dimensions(level)
-		current_level_difficulty_scale = _get_level_difficulty_scale(level)
+		var dimensions: Vector2i = ProgressionScript.get_level_dimensions(level, player_skill_rating, LEVEL_DIMENSION_PROFILES)
+		current_level_difficulty_scale = ProgressionScript.get_level_difficulty_scale(level, player_skill_rating)
 		grid_width = dimensions.x
 		grid_height = dimensions.y
 		level_seed = abs(hash([run_seed, level, grid_width, grid_height]))
@@ -468,22 +458,8 @@ func _generate_level_internal(reuse_current_profile: bool = false, hide_splash_b
 	queue_redraw()
 
 
-func _get_level_dimensions(current_level: int) -> Vector2i:
-	var stage_progress: float = float(maxi(current_level - 1, 0)) * 0.48 + _get_skill_pressure(current_level) * 0.55
-	var stage_index: int = clampi(int(floor(stage_progress)), 0, LEVEL_DIMENSION_PROFILES.size() - 1)
-	return LEVEL_DIMENSION_PROFILES[stage_index]
-
-
-func _get_level_difficulty_scale(current_level: int) -> float:
-	var level_span: int = maxi(current_level - 1, 0)
-	var early_levels: int = mini(level_span, 6)
-	var late_levels: int = maxi(level_span - 6, 0)
-	return 1.0 + float(early_levels) * 0.08 + float(late_levels) * 0.035 + _get_skill_pressure(current_level) * 0.12
-
-
 func _get_skill_pressure(current_level: int) -> float:
-	var taper: float = lerpf(1.35, 0.72, clampf(float(current_level - 1) / 8.0, 0.0, 1.0))
-	return clampf(player_skill_rating * taper, 0.0, 1.0)
+	return ProgressionScript.get_skill_pressure(current_level, player_skill_rating)
 
 
 func _handle_grid_tap(screen_position: Vector2) -> void:
@@ -521,10 +497,10 @@ func _move_player_to(target_cell: Vector2i) -> void:
 	move_animation_elapsed = 0.0
 	landing_bounce_cell = target_cell
 	landing_bounce_elapsed = 0.0
-	player_steps = _saturating_add(player_steps, 1)
+	player_steps = ProgressionScript.saturating_add(player_steps, 1, MAX_TRACKED_VALUE)
 
 	if player_cell != goal_cell:
-		player_total = _saturating_add(player_total, _get_cell_value(player_cell))
+		player_total = ProgressionScript.saturating_add(player_total, _get_cell_value(player_cell), MAX_TRACKED_VALUE)
 		player_total_bounce_elapsed = 0.0
 
 	if audio_controller != null:
@@ -578,8 +554,8 @@ func _finish_level_complete() -> void:
 	completed = true
 	splash_mode = SplashMode.LEVEL_COMPLETE
 	_record_level_result(true)
-	run_total_score = _saturating_add(run_total_score, _calculate_star_rating())
-	run_levels_cleared = _saturating_add(run_levels_cleared, 1)
+	run_total_score = ProgressionScript.saturating_add(run_total_score, _calculate_star_rating(), MAX_TRACKED_VALUE)
+	run_levels_cleared = ProgressionScript.saturating_add(run_levels_cleared, 1, MAX_TRACKED_VALUE)
 	_set_footer_enabled(false)
 	_update_ui()
 	_update_completion_splash()
@@ -594,7 +570,7 @@ func _finish_level_failed() -> void:
 func _advance_to_next_level() -> void:
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
-	level = _saturating_add(level, 1)
+	level = ProgressionScript.saturating_add(level, 1, MAX_TRACKED_VALUE)
 	level_retries = 0
 	_generate_level(false)
 
@@ -829,16 +805,7 @@ func _show_title_screen() -> void:
 
 
 func _record_level_result(was_successful: bool) -> void:
-	var sample: float = 0.0
-	if was_successful:
-		var path_efficiency: float = clampf(float(optimal_steps) / maxf(float(player_steps), float(optimal_steps)), 0.0, 1.0)
-		var retry_penalty: float = minf(float(level_retries) * 0.14, 0.35)
-		sample = clampf(path_efficiency - retry_penalty, 0.0, 1.0)
-	else:
-		sample = maxf(0.0, player_skill_rating - 0.16 - float(level_retries) * 0.03)
-
-	var adapt_rate: float = 0.38 if level <= 4 else 0.18
-	player_skill_rating = clampf(lerpf(player_skill_rating, sample, adapt_rate), 0.0, 1.0)
+	player_skill_rating = ProgressionScript.update_skill_rating(player_skill_rating, was_successful, optimal_steps, player_steps, level_retries, level)
 
 
 func _sync_music_state() -> void:
@@ -848,55 +815,27 @@ func _sync_music_state() -> void:
 
 
 func _calculate_star_rating() -> int:
-	var move_margin: int = maxi(player_steps - optimal_steps, 0)
-	if move_margin == 0:
-		return 3
-	if move_margin <= maxi(2, int(ceili(current_level_difficulty_scale))):
-		return 2
-	return 1
+	return ProgressionScript.calculate_star_rating(player_steps, optimal_steps, current_level_difficulty_scale)
 
 
 func _calculate_final_run_score() -> int:
-	return clampi(run_total_score * 120 + run_levels_cleared * 45 - run_total_resets * 18, 0, MAX_TRACKED_VALUE)
+	return ProgressionScript.calculate_final_run_score(run_total_score, run_levels_cleared, run_total_resets, MAX_TRACKED_VALUE)
 
 
 func _saturating_add(value: int, delta: int) -> int:
-	return clampi(value + delta, 0, MAX_TRACKED_VALUE)
+	return ProgressionScript.saturating_add(value, delta, MAX_TRACKED_VALUE)
 
 
 func _build_star_string(stars: int) -> String:
-	var segments: Array[String] = []
-	for index in range(3):
-		segments.append("★" if index < stars else "☆")
-	return " ".join(segments)
+	return ProgressionScript.build_star_string(stars)
 
 
 func _direction_from_key(event: InputEventKey) -> Vector2i:
-	match event.keycode:
-		KEY_UP, KEY_W:
-			return Vector2i.UP
-		KEY_RIGHT, KEY_D:
-			return Vector2i.RIGHT
-		KEY_DOWN, KEY_S:
-			return Vector2i.DOWN
-		KEY_LEFT, KEY_A:
-			return Vector2i.LEFT
-		_:
-			return Vector2i.ZERO
+	return InputScript.direction_from_keycode(event.keycode)
 
 
 func _direction_from_joypad_button(event: InputEventJoypadButton) -> Vector2i:
-	match event.button_index:
-		JOY_BUTTON_DPAD_UP:
-			return Vector2i.UP
-		JOY_BUTTON_DPAD_RIGHT:
-			return Vector2i.RIGHT
-		JOY_BUTTON_DPAD_DOWN:
-			return Vector2i.DOWN
-		JOY_BUTTON_DPAD_LEFT:
-			return Vector2i.LEFT
-		_:
-			return Vector2i.ZERO
+	return InputScript.direction_from_joypad_button(event.button_index)
 
 
 func _handle_joypad_motion(event: InputEventJoypadMotion) -> void:
@@ -1383,40 +1322,20 @@ func _refresh_localized_text() -> void:
 
 
 func _configure_input_actions() -> void:
-	_ensure_key_action(ACTION_ACCEPT, KEY_ENTER)
-	_ensure_key_action(ACTION_ACCEPT, KEY_KP_ENTER)
-	_ensure_key_action(ACTION_ACCEPT, KEY_SPACE)
-	_ensure_joypad_action(ACTION_ACCEPT, JOY_BUTTON_A)
-	_ensure_key_action(ACTION_RETRY, KEY_R)
-	_ensure_joypad_action(ACTION_RETRY, JOY_BUTTON_Y)
-	_ensure_key_action(ACTION_END_RUN, KEY_E)
-	_ensure_joypad_action(ACTION_END_RUN, JOY_BUTTON_B)
-	_ensure_key_action(ACTION_INVERT, KEY_I)
-	_ensure_joypad_action(ACTION_INVERT, JOY_BUTTON_X)
-	_ensure_key_action(ACTION_PAUSE, KEY_ESCAPE)
-	_ensure_joypad_action(ACTION_PAUSE, JOY_BUTTON_START)
-
-
-func _ensure_key_action(action_name: StringName, keycode: Key) -> void:
-	if not InputMap.has_action(action_name):
-		InputMap.add_action(action_name)
-	for existing_event in InputMap.action_get_events(action_name):
-		if existing_event is InputEventKey and existing_event.keycode == keycode:
-			return
-	var key_event: InputEventKey = InputEventKey.new()
-	key_event.keycode = keycode
-	InputMap.action_add_event(action_name, key_event)
-
-
-func _ensure_joypad_action(action_name: StringName, button_index: JoyButton) -> void:
-	if not InputMap.has_action(action_name):
-		InputMap.add_action(action_name)
-	for existing_event in InputMap.action_get_events(action_name):
-		if existing_event is InputEventJoypadButton and existing_event.button_index == button_index:
-			return
-	var button_event: InputEventJoypadButton = InputEventJoypadButton.new()
-	button_event.button_index = button_index
-	InputMap.action_add_event(action_name, button_event)
+	InputScript.configure_input_actions([
+		{"action": ACTION_ACCEPT, "keycode": KEY_ENTER},
+		{"action": ACTION_ACCEPT, "keycode": KEY_KP_ENTER},
+		{"action": ACTION_ACCEPT, "keycode": KEY_SPACE},
+		{"action": ACTION_ACCEPT, "button_index": JOY_BUTTON_A},
+		{"action": ACTION_RETRY, "keycode": KEY_R},
+		{"action": ACTION_RETRY, "button_index": JOY_BUTTON_Y},
+		{"action": ACTION_END_RUN, "keycode": KEY_E},
+		{"action": ACTION_END_RUN, "button_index": JOY_BUTTON_B},
+		{"action": ACTION_INVERT, "keycode": KEY_I},
+		{"action": ACTION_INVERT, "button_index": JOY_BUTTON_X},
+		{"action": ACTION_PAUSE, "keycode": KEY_ESCAPE},
+		{"action": ACTION_PAUSE, "button_index": JOY_BUTTON_START},
+	])
 
 
 func _get_splash_action_text() -> String:
@@ -1830,8 +1749,8 @@ func _apply_palette_to_ui() -> void:
 	splash_sfx_label.add_theme_color_override("font_color", text_color)
 	splash_sfx_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_stars_label.add_theme_color_override("font_outline_color", outline_color)
-	_apply_slider_palette(splash_music_slider)
-	_apply_slider_palette(splash_sfx_slider)
+	UiStylesScript.apply_slider_palette(splash_music_slider, panel_color, goal_color, retry_button_color, end_button_color, end_button_hover_color, pulse_time)
+	UiStylesScript.apply_slider_palette(splash_sfx_slider, panel_color, goal_color, retry_button_color, end_button_color, end_button_hover_color, pulse_time)
 
 
 func _refresh_ui_layout() -> void:
@@ -1911,77 +1830,24 @@ func _apply_ui_metrics() -> void:
 
 
 func _apply_label_style(label: Label, font_size: int, outline_size: int, color: Color) -> void:
-	label.add_theme_font_override("font", _get_active_ui_font())
-	label.add_theme_font_size_override("font_size", font_size)
-	label.add_theme_constant_override("outline_size", outline_size)
-	label.add_theme_color_override("font_color", text_color)
-	label.add_theme_color_override("font_outline_color", outline_color)
+	UiStylesScript.apply_label_style(label, _get_active_ui_font(), font_size, outline_size, text_color, outline_color)
 
 
 func _apply_button_style_metrics(button: Button, font_size: int) -> void:
-	button.custom_minimum_size = Vector2(0.0, round(122.0 * _get_ui_scale()))
-	button.add_theme_font_override("font", _get_active_ui_font())
-	button.add_theme_font_size_override("font_size", font_size)
-	button.add_theme_constant_override("outline_size", 10 if button in [splash_language_button, splash_action_button, splash_retry_button, splash_invert_button, splash_end_run_button] else 8)
-	button.add_theme_color_override("font_color", text_color)
-	button.add_theme_color_override("font_hover_color", text_color)
-	button.add_theme_color_override("font_pressed_color", text_color)
-	button.add_theme_color_override("font_focus_color", text_color)
-	button.add_theme_color_override("font_outline_color", outline_color)
-
-	if button == pause_button:
-		button.custom_minimum_size.x = round(162.0 * _get_ui_scale())
-	elif button == invert_button:
-		button.custom_minimum_size.x = round(162.0 * _get_ui_scale())
+	var minimum_width: float = 0.0
+	if button == pause_button or button == invert_button:
+		minimum_width = round(162.0 * _get_ui_scale())
 	elif button == splash_language_button:
-		button.custom_minimum_size.x = round(420.0 * _get_ui_scale())
-
-
-func _apply_slider_palette(slider: HSlider) -> void:
-	var is_focused: bool = slider != null and slider.has_focus()
-	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 5.2)
-	var focus_mix: float = (0.16 + pulse * 0.2) if is_focused else 0.0
-	var rail_style: StyleBoxFlat = StyleBoxFlat.new()
-	rail_style.bg_color = panel_color.darkened(0.12).lerp(goal_color.lightened(0.18), focus_mix * 0.2)
-	rail_style.set_corner_radius_all(18)
-	rail_style.content_margin_left = 18
-	rail_style.content_margin_right = 18
-	rail_style.content_margin_top = 14 + int(round(focus_mix * 5.0))
-	rail_style.content_margin_bottom = 14 + int(round(focus_mix * 5.0))
-	slider.add_theme_stylebox_override("slider", rail_style)
-	var active_style: StyleBoxFlat = StyleBoxFlat.new()
-	active_style.bg_color = retry_button_color.lightened(0.18).lerp(goal_color.lightened(0.22), focus_mix)
-	active_style.set_corner_radius_all(18)
-	active_style.content_margin_left = 18
-	active_style.content_margin_right = 18
-	active_style.content_margin_top = 14 + int(round(focus_mix * 5.0))
-	active_style.content_margin_bottom = 14 + int(round(focus_mix * 5.0))
-	slider.add_theme_stylebox_override("grabber_area", active_style)
-	slider.add_theme_stylebox_override("grabber_area_highlight", active_style)
-	slider.add_theme_icon_override("grabber", _make_slider_grabber_icon(end_button_color, 34 if is_focused else 28))
-	slider.add_theme_icon_override("grabber_highlight", _make_slider_grabber_icon(end_button_hover_color, 36 if is_focused else 30))
-
-
-func _make_slider_grabber_icon(color: Color, size: int = 28) -> ImageTexture:
-	var image: Image = Image.create(size, size, false, Image.FORMAT_RGBA8)
-	image.fill(Color(0.0, 0.0, 0.0, 0.0))
-	var center: Vector2 = Vector2(size * 0.5, size * 0.5)
-	var radius: float = size * 0.38
-	for y in range(size):
-		for x in range(size):
-			var distance: float = Vector2(float(x), float(y)).distance_to(center)
-			if distance <= radius:
-				image.set_pixel(x, y, color)
-			elif distance <= radius + 2.0:
-				image.set_pixel(x, y, color.darkened(0.35))
-	return ImageTexture.create_from_image(image)
+		minimum_width = round(420.0 * _get_ui_scale())
+	var outline_size: int = 10 if button in [splash_language_button, splash_action_button, splash_retry_button, splash_invert_button, splash_end_run_button] else 8
+	UiStylesScript.apply_button_style_metrics(button, _get_active_ui_font(), font_size, outline_size, text_color, outline_color, _get_ui_scale(), minimum_width)
 
 
 func _refresh_dynamic_control_styles() -> void:
 	if splash_music_slider != null and splash_music_slider.visible:
-		_apply_slider_palette(splash_music_slider)
+		UiStylesScript.apply_slider_palette(splash_music_slider, panel_color, goal_color, retry_button_color, end_button_color, end_button_hover_color, pulse_time)
 	if splash_sfx_slider != null and splash_sfx_slider.visible:
-		_apply_slider_palette(splash_sfx_slider)
+		UiStylesScript.apply_slider_palette(splash_sfx_slider, panel_color, goal_color, retry_button_color, end_button_color, end_button_hover_color, pulse_time)
 
 
 func _get_ui_scale() -> float:
@@ -2012,115 +1878,37 @@ func _get_outer_margin() -> float:
 
 
 func _load_ui_font() -> void:
-	var font_bytes: PackedByteArray = FileAccess.get_file_as_bytes("res://assets/fonts/Fredoka.ttf")
-	if font_bytes.is_empty():
-		ui_font = ThemeDB.fallback_font
-	else:
-		var font_file: FontFile = FontFile.new()
-		font_file.data = font_bytes
-		ui_font = font_file
-
-	var system_font: SystemFont = SystemFont.new()
-	system_font.font_names = PackedStringArray([
-		"Hiragino Sans",
-		"Hiragino Kaku Gothic ProN",
-		"Yu Gothic",
-		"PingFang SC",
-		"Heiti SC",
-		"Apple SD Gothic Neo",
-		"Noto Sans CJK JP",
-		"Noto Sans CJK SC",
-		"Noto Sans CJK KR",
-		"Noto Sans JP",
-		"Noto Sans SC",
-		"Noto Sans KR",
-		"Noto Sans Arabic",
-		"Noto Sans Devanagari",
-		"Geeza Pro",
-		"Kohinoor Devanagari",
-		"Microsoft YaHei",
-		"Malgun Gothic",
-		"Segoe UI",
-	])
-	multilingual_ui_font = system_font
+	ui_font = UiStylesScript.load_primary_font("res://assets/fonts/Fredoka.ttf")
+	multilingual_ui_font = UiStylesScript.build_multilingual_font()
 
 
 func _get_active_ui_font() -> Font:
-	if language_code in ["zh_CN", "hi", "ar", "ja", "ko"]:
-		return multilingual_ui_font if multilingual_ui_font != null else ThemeDB.fallback_font
-	return ui_font
+	return UiStylesScript.get_active_font(language_code, ui_font, multilingual_ui_font)
 
 
 func _make_panel_style(bg_color: Color, border_color: Color, shadow_color: Color) -> StyleBoxFlat:
-	var style: StyleBoxFlat = StyleBoxFlat.new()
-	style.bg_color = bg_color
-	style.border_color = border_color.lightened(0.08)
-	style.border_blend = true
-	style.set_border_width_all(4)
-	style.set_corner_radius_all(24)
-	style.corner_detail = 10
-	style.content_margin_left = 20
-	style.content_margin_right = 20
-	style.content_margin_top = 18
-	style.content_margin_bottom = 18
-	style.shadow_color = _with_alpha(shadow_color.darkened(0.35), 0.34)
-	style.shadow_size = 16
-	style.shadow_offset = Vector2(0.0, 8.0)
-	return style
+	return UiStylesScript.make_panel_style(bg_color, border_color, shadow_color)
 
 
 func _make_button_style(bg_color: Color) -> StyleBoxFlat:
-	var style: StyleBoxFlat = StyleBoxFlat.new()
-	style.bg_color = bg_color
-	style.border_color = bg_color.lightened(0.22)
-	style.border_blend = true
-	style.set_border_width_all(4)
-	style.set_corner_radius_all(24)
-	style.corner_detail = 10
-	style.content_margin_left = 20
-	style.content_margin_right = 20
-	style.content_margin_top = 16
-	style.content_margin_bottom = 18
-	style.shadow_color = _with_alpha(bg_color.darkened(0.62), 0.46)
-	style.shadow_size = 16
-	style.shadow_offset = Vector2(0.0, 8.0)
-	return style
+	return UiStylesScript.make_button_style(bg_color)
 
 
 func _make_button_focus_style(border_color: Color) -> StyleBoxFlat:
-	var style: StyleBoxFlat = StyleBoxFlat.new()
-	style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-	style.border_color = border_color.lightened(0.25)
-	style.set_border_width_all(6)
-	style.set_corner_radius_all(26)
-	style.corner_detail = 10
-	style.shadow_color = _with_alpha(border_color.lightened(0.15), 0.38)
-	style.shadow_size = 14
-	style.shadow_offset = Vector2.ZERO
-	return style
+	return UiStylesScript.make_button_focus_style(border_color)
 
 
 func _load_persistent_data() -> void:
-	var config: ConfigFile = ConfigFile.new()
-	if config.load(SAVE_FILE_PATH) != OK:
-		return
-	invert_colors_enabled = bool(config.get_value("settings", "invert_colors_enabled", false))
-	language_code = String(config.get_value("settings", "language_code", LocalizationScript.DEFAULT_LANGUAGE))
-	if not LocalizationScript.has_language(language_code):
-		language_code = LocalizationScript.DEFAULT_LANGUAGE
-	music_volume_setting = clampf(float(config.get_value("audio", "music_volume", 1.0)), 0.0, 1.0)
-	sfx_volume_setting = clampf(float(config.get_value("audio", "sfx_volume", 1.0)), 0.0, 1.0)
-	best_run_score = maxi(int(config.get_value("records", "best_run_score", 0)), 0)
+	var settings: Dictionary = PersistenceScript.load_settings(SAVE_FILE_PATH, LocalizationScript.DEFAULT_LANGUAGE, LocalizationScript.has_language)
+	invert_colors_enabled = bool(settings.get("invert_colors_enabled", false))
+	language_code = String(settings.get("language_code", LocalizationScript.DEFAULT_LANGUAGE))
+	music_volume_setting = float(settings.get("music_volume", 1.0))
+	sfx_volume_setting = float(settings.get("sfx_volume", 1.0))
+	best_run_score = int(settings.get("best_run_score", 0))
 
 
 func _save_persistent_data() -> void:
-	var config: ConfigFile = ConfigFile.new()
-	config.set_value("settings", "invert_colors_enabled", invert_colors_enabled)
-	config.set_value("settings", "language_code", language_code)
-	config.set_value("audio", "music_volume", music_volume_setting)
-	config.set_value("audio", "sfx_volume", sfx_volume_setting)
-	config.set_value("records", "best_run_score", best_run_score)
-	config.save(SAVE_FILE_PATH)
+	PersistenceScript.save_settings(SAVE_FILE_PATH, invert_colors_enabled, language_code, music_volume_setting, sfx_volume_setting, best_run_score)
 
 
 func _apply_persistent_audio_settings() -> void:
@@ -2139,10 +1927,7 @@ func _remember_best_run_score(score: int) -> void:
 
 
 func _apply_button_palette(button: Button, normal_color: Color, hover_color: Color, pressed_color: Color) -> void:
-	button.add_theme_stylebox_override("normal", _make_button_style(normal_color))
-	button.add_theme_stylebox_override("hover", _make_button_style(hover_color))
-	button.add_theme_stylebox_override("pressed", _make_button_style(pressed_color))
-	button.add_theme_stylebox_override("focus", _make_button_focus_style(hover_color))
+	UiStylesScript.apply_button_palette(button, normal_color, hover_color, pressed_color)
 
 
 func _set_splash_visible(is_visible: bool) -> void:
@@ -2495,9 +2280,7 @@ func _get_text_outline_color(text_fill_color: Color) -> Color:
 
 
 func _get_best_score_text() -> String:
-	if best_run_score <= 0:
-		return _loc("BEST_SCORE_NONE")
-	return _loc("BEST_SCORE") % best_run_score
+	return ProgressionScript.get_best_score_text(best_run_score, _loc("BEST_SCORE_NONE"), _loc("BEST_SCORE"))
 
 
 func _rebuild_tile_value_colors() -> void:

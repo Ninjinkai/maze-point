@@ -67,6 +67,14 @@ All music and sound effects are generated in code at runtime.
    godot --path .
    ```
 
+## Running tests
+
+Run the lightweight headless helper-suite with:
+
+```bash
+godot --headless --path . --script res://tests/test_runner.gd
+```
+
 ## Desktop builds
 
 Desktop export presets are included for:
@@ -87,7 +95,11 @@ For publishing, GitHub Releases is a better fit than committing raw desktop bina
 
 ## Repository layout
 
-- `scripts/game.gd` - gameplay, UI, input, rendering, totals, and animation hooks
-- `scripts/maze_generator.gd` - procedural number-grid generation, target construction, and optimal-path validation
-- `scripts/procedural_audio.gd` - procedural music and synthesized sound effects
+- `scripts/game.gd` - high-level game coordinator
+- `scripts/game/` - extracted gameplay progression, input, persistence, styling, and rendering helpers
+- `scripts/maze_generator.gd` - procedural number-grid generation and optimal-path validation
+- `scripts/generator/` - extracted generator scoring and path-shape heuristics
+- `scripts/procedural_audio.gd` - procedural music and synthesized sound effects controller
+- `scripts/audio/` - extracted audio math and stream-building helpers
+- `tests/` - headless unit tests for pure helper modules
 - `assets/fonts/` - bundled UI font assets

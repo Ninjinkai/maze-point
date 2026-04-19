@@ -3,6 +3,8 @@ class_name ProceduralAudio
 
 const SAMPLE_RATE := 22050
 const SFX_POOL_SIZE := 6
+const AudioMathScript = preload("res://scripts/audio/audio_math.gd")
+const AudioStreamFactoryScript = preload("res://scripts/audio/audio_stream_factory.gd")
 
 var audio_enabled: bool = true
 var music_player: AudioStreamPlayer
@@ -43,7 +45,7 @@ func _process(delta: float) -> void:
 		return
 	if not music_player.playing and music_player.stream != null:
 		music_player.play()
-	music_player.volume_db = lerpf(music_player.volume_db, music_target_volume_db + _gain_to_db(music_volume), clampf(delta * 3.2, 0.0, 1.0))
+	music_player.volume_db = lerpf(music_player.volume_db, music_target_volume_db + AudioMathScript.gain_to_db(music_volume), clampf(delta * 3.2, 0.0, 1.0))
 	music_player.pitch_scale = lerpf(music_player.pitch_scale, music_target_pitch_scale, clampf(delta * 2.4, 0.0, 1.0))
 
 
@@ -137,8 +139,6 @@ func _build_players() -> void:
 
 func _build_sfx_cache() -> void:
 	cached_sfx["move"] = _build_move_stream()
-	cached_sfx["goal"] = _build_goal_stream()
-	cached_sfx["timeout"] = _build_timeout_stream()
 	cached_sfx["success"] = _build_success_stream()
 	cached_sfx["failure"] = _build_failure_stream()
 	cached_sfx["menu_move"] = _build_menu_move_stream()
@@ -154,7 +154,7 @@ func _play_sfx(key: String) -> void:
 	if not cached_sfx.has(key):
 		return
 	var player: AudioStreamPlayer = _get_available_sfx_player()
-	player.volume_db = -5.0 + _gain_to_db(sfx_volume)
+	player.volume_db = -5.0 + AudioMathScript.gain_to_db(sfx_volume)
 	player.stream = cached_sfx[key]
 	player.play()
 
@@ -179,7 +179,7 @@ func _update_music_stream(run_seed: int) -> void:
 
 	current_music_signature = signature
 	music_player.stream = _build_music_stream(run_seed)
-	music_player.volume_db = music_target_volume_db + _gain_to_db(music_volume)
+	music_player.volume_db = music_target_volume_db + AudioMathScript.gain_to_db(music_volume)
 	music_player.pitch_scale = music_target_pitch_scale
 	music_player.play()
 
@@ -250,10 +250,10 @@ func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 	var syncopation: float = 0.03 + rng.randf() * 0.08
 	var shimmer_rate: float = 1.1 + rng.randf() * 2.4
 	var hat_seed: int = rng.randi()
-	var kick_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 0)
-	var clap_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 1)
-	var hat_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 2)
-	var sub_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 3)
+	var kick_pattern: Array[float] = AudioMathScript.build_rhythm_pattern(rng, steps_per_bar, style_id, 0)
+	var clap_pattern: Array[float] = AudioMathScript.build_rhythm_pattern(rng, steps_per_bar, style_id, 1)
+	var hat_pattern: Array[float] = AudioMathScript.build_rhythm_pattern(rng, steps_per_bar, style_id, 2)
+	var sub_pattern: Array[float] = AudioMathScript.build_rhythm_pattern(rng, steps_per_bar, style_id, 3)
 
 	for frame in range(total_frames):
 		var time: float = float(frame) / SAMPLE_RATE
@@ -265,11 +265,11 @@ func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 		var bar_index: int = int(floor(float(step_index % steps_per_bar) / (4 if steps_per_bar >= 16 else 3))) % chord_pattern.size()
 		var lead_note_value: int = lead_pattern[step_index]
 		var counter_note_value: int = counter_pattern[step_index]
-		var lead_note: float = _midi_to_frequency(root_note + maxi(lead_note_value, 0))
-		var bass_note: float = _midi_to_frequency(root_note + bass_pattern[int(floor(float(step_index) / 2.0)) % bass_pattern.size()])
-		var counter_note: float = _midi_to_frequency(root_note + maxi(counter_note_value, 0))
-		var pad_root: float = _midi_to_frequency(root_note + int(chord_pattern[bar_index]))
-		var pad_third: float = _midi_to_frequency(root_note + int(chord_pattern[bar_index]) + int(mode[(bar_index + 2) % mode.size()]))
+		var lead_note: float = AudioMathScript.midi_to_frequency(root_note + maxi(lead_note_value, 0))
+		var bass_note: float = AudioMathScript.midi_to_frequency(root_note + bass_pattern[int(floor(float(step_index) / 2.0)) % bass_pattern.size()])
+		var counter_note: float = AudioMathScript.midi_to_frequency(root_note + maxi(counter_note_value, 0))
+		var pad_root: float = AudioMathScript.midi_to_frequency(root_note + int(chord_pattern[bar_index]))
+		var pad_third: float = AudioMathScript.midi_to_frequency(root_note + int(chord_pattern[bar_index]) + int(mode[(bar_index + 2) % mode.size()]))
 		var kick_phase: float = step_progress
 		var clap_phase: float = step_progress
 		var hat_phase: float = step_progress
@@ -287,40 +287,33 @@ func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 		if lead_note_value > -1000:
 			match style_id:
 				0:
-					lead_sample = (_triangle_wave(time * lead_note) * 0.62 + _square_wave(time * lead_note * 0.5) * syncopation + _sine_wave(time * lead_note * 2.0) * 0.1) * lead_env
+					lead_sample = (AudioMathScript.triangle_wave(time * lead_note) * 0.62 + AudioMathScript.square_wave(time * lead_note * 0.5) * syncopation + AudioMathScript.sine_wave(time * lead_note * 2.0) * 0.1) * lead_env
 				1:
-					lead_sample = (_square_wave(time * lead_note) * 0.32 + _triangle_wave(time * lead_note * 0.5) * 0.34 + _sine_wave(time * lead_note * 1.5) * 0.18) * lead_env
+					lead_sample = (AudioMathScript.square_wave(time * lead_note) * 0.32 + AudioMathScript.triangle_wave(time * lead_note * 0.5) * 0.34 + AudioMathScript.sine_wave(time * lead_note * 1.5) * 0.18) * lead_env
 				2:
-					lead_sample = (_triangle_wave(time * lead_note) * 0.54 + _sine_wave(time * lead_note * 2.0) * 0.2 + _noise_like_sample(time, 3) * 0.02) * lead_env
+					lead_sample = (AudioMathScript.triangle_wave(time * lead_note) * 0.54 + AudioMathScript.sine_wave(time * lead_note * 2.0) * 0.2 + AudioMathScript.noise_like_sample(time, 3) * 0.02) * lead_env
 				3:
-					lead_sample = (_sine_wave(time * lead_note) * 0.46 + _triangle_wave(time * lead_note * 0.5) * 0.34 + _square_wave(time * lead_note * 0.25) * 0.08) * lead_env
+					lead_sample = (AudioMathScript.sine_wave(time * lead_note) * 0.46 + AudioMathScript.triangle_wave(time * lead_note * 0.5) * 0.34 + AudioMathScript.square_wave(time * lead_note * 0.25) * 0.08) * lead_env
 				_:
-					lead_sample = (_triangle_wave(time * lead_note) * 0.5 + _sine_wave(time * lead_note * 1.5) * 0.26 + _square_wave(time * lead_note * 0.25) * 0.08) * lead_env
+					lead_sample = (AudioMathScript.triangle_wave(time * lead_note) * 0.5 + AudioMathScript.sine_wave(time * lead_note * 1.5) * 0.26 + AudioMathScript.square_wave(time * lead_note * 0.25) * 0.08) * lead_env
 
 		var counter_sample: float = 0.0
 		if counter_note_value > -1000:
-			counter_sample = (_sine_wave(time * counter_note) * 0.52 + _triangle_wave(time * counter_note * 0.5) * 0.2) * counter_env
+			counter_sample = (AudioMathScript.sine_wave(time * counter_note) * 0.52 + AudioMathScript.triangle_wave(time * counter_note * 0.5) * 0.2) * counter_env
 
-		var bass_sample: float = (_sine_wave(time * bass_note) * 0.78 + _triangle_wave(time * bass_note * 0.5) * 0.12) * bass_env
-		var pad_sample: float = (_sine_wave(time * pad_root) * 0.42 + _triangle_wave(time * pad_third) * 0.25 + _sine_wave(time * pad_root * 0.5) * 0.16) * pad_env
-		var kick_sample: float = _sine_wave(time * lerpf(52.0, 28.0, kick_phase)) * kick_env
-		var clap_sample: float = (_noise_like_sample(time, 5) * 0.64 + _triangle_wave(time * 1040.0) * 0.06) * clap_env
-		var hat_sample: float = (_noise_like_sample(time, hat_seed) * 0.48 + _square_wave(time * 2880.0) * 0.04) * hat_env
-		var sparkle_sample: float = _sine_wave(time * (lead_note * (1.4 + 0.3 * sin(time * shimmer_rate)))) * lead_env * 0.11
-		var sub_sample: float = _sine_wave(time * (bass_note * 0.5)) * sub_env
+		var bass_sample: float = (AudioMathScript.sine_wave(time * bass_note) * 0.78 + AudioMathScript.triangle_wave(time * bass_note * 0.5) * 0.12) * bass_env
+		var pad_sample: float = (AudioMathScript.sine_wave(time * pad_root) * 0.42 + AudioMathScript.triangle_wave(time * pad_third) * 0.25 + AudioMathScript.sine_wave(time * pad_root * 0.5) * 0.16) * pad_env
+		var kick_sample: float = AudioMathScript.sine_wave(time * lerpf(52.0, 28.0, kick_phase)) * kick_env
+		var clap_sample: float = (AudioMathScript.noise_like_sample(time, 5) * 0.64 + AudioMathScript.triangle_wave(time * 1040.0) * 0.06) * clap_env
+		var hat_sample: float = (AudioMathScript.noise_like_sample(time, hat_seed) * 0.48 + AudioMathScript.square_wave(time * 2880.0) * 0.04) * hat_env
+		var sparkle_sample: float = AudioMathScript.sine_wave(time * (lead_note * (1.4 + 0.3 * sin(time * shimmer_rate)))) * lead_env * 0.11
+		var sub_sample: float = AudioMathScript.sine_wave(time * (bass_note * 0.5)) * sub_env
 
 		var mix: float = lead_sample * 0.25 + counter_sample * 0.1 + bass_sample * 0.22 + pad_sample * 0.19 + kick_sample * 0.13 + clap_sample * 0.04 + hat_sample * 0.025 + sparkle_sample * 0.65 + sub_sample * 0.075
 
 		data.encode_s16(frame * 2, int(round(clampf(mix * 0.8, -1.0, 1.0) * 32767.0)))
 
-	var stream: AudioStreamWAV = AudioStreamWAV.new()
-	stream.mix_rate = SAMPLE_RATE
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.stereo = false
-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	stream.loop_end = total_frames
-	stream.data = data
-	return stream
+	return AudioStreamFactoryScript.make_wav_stream(data, true, total_frames)
 
 
 func _build_move_stream() -> AudioStreamWAV:
@@ -333,26 +326,9 @@ func _build_move_stream() -> AudioStreamWAV:
 		var time: float = float(frame) / SAMPLE_RATE
 		var env: float = pow(1.0 - progress, 2.2)
 		var freq: float = lerpf(520.0, 760.0, progress)
-		var sample: float = _triangle_wave(time * freq) * env
+		var sample: float = AudioMathScript.triangle_wave(time * freq) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.55, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
-
-
-func _build_goal_stream() -> AudioStreamWAV:
-	var duration: float = 0.48
-	var total_frames: int = int(round(duration * SAMPLE_RATE))
-	var data: PackedByteArray = PackedByteArray()
-	data.resize(total_frames * 2)
-	var notes: Array[float] = [523.25, 659.25, 783.99]
-	for frame in range(total_frames):
-		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
-		var time: float = float(frame) / SAMPLE_RATE
-		var note_index: int = mini(int(floor(progress * 3.0)), 2)
-		var local_progress: float = fposmod(progress * 3.0, 1.0)
-		var env: float = pow(1.0 - local_progress, 1.8)
-		var sample: float = (_triangle_wave(time * notes[note_index]) * 0.6 + _sine_wave(time * notes[note_index] * 1.5) * 0.4) * env
-		data.encode_s16(frame * 2, int(round(clampf(sample * 0.7, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_success_stream() -> AudioStreamWAV:
@@ -368,9 +344,9 @@ func _build_success_stream() -> AudioStreamWAV:
 		var local_progress: float = fposmod(progress * 4.0, 1.0)
 		var env: float = pow(1.0 - local_progress, 1.7)
 		var note: float = notes[segment]
-		var sample: float = (_triangle_wave(time * note) * 0.52 + _sine_wave(time * note * 1.5) * 0.28 + _sine_wave(time * note * 2.0) * 0.12) * env
+		var sample: float = (AudioMathScript.triangle_wave(time * note) * 0.52 + AudioMathScript.sine_wave(time * note * 1.5) * 0.28 + AudioMathScript.sine_wave(time * note * 2.0) * 0.12) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.74, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_failure_stream() -> AudioStreamWAV:
@@ -384,25 +360,9 @@ func _build_failure_stream() -> AudioStreamWAV:
 		var env: float = pow(1.0 - progress, 1.1)
 		var freq: float = lerpf(310.0, 118.0, progress)
 		var wobble: float = 1.0 + sin(TAU * time * 8.0) * 0.05
-		var sample: float = (_square_wave(time * freq * wobble) * 0.36 + _triangle_wave(time * freq * 0.5) * 0.26 + _noise_like_sample(time, 9) * 0.07) * env
+		var sample: float = (AudioMathScript.square_wave(time * freq * wobble) * 0.36 + AudioMathScript.triangle_wave(time * freq * 0.5) * 0.26 + AudioMathScript.noise_like_sample(time, 9) * 0.07) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.8, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
-
-
-func _build_timeout_stream() -> AudioStreamWAV:
-	var duration: float = 0.56
-	var total_frames: int = int(round(duration * SAMPLE_RATE))
-	var data: PackedByteArray = PackedByteArray()
-	data.resize(total_frames * 2)
-	for frame in range(total_frames):
-		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
-		var time: float = float(frame) / SAMPLE_RATE
-		var env: float = pow(1.0 - progress, 0.9)
-		var freq: float = lerpf(280.0, 72.0, progress)
-		var wobble: float = sin(TAU * time * 7.0) * 0.03
-		var sample: float = (_square_wave(time * freq * (1.0 + wobble)) * 0.55 + _sine_wave(time * freq * 0.5) * 0.45) * env
-		data.encode_s16(frame * 2, int(round(clampf(sample * 0.72, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_menu_move_stream() -> AudioStreamWAV:
@@ -414,9 +374,9 @@ func _build_menu_move_stream() -> AudioStreamWAV:
 		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
 		var time: float = float(frame) / SAMPLE_RATE
 		var env: float = pow(1.0 - progress, 2.6)
-		var sample: float = _triangle_wave(time * 920.0) * env
+		var sample: float = AudioMathScript.triangle_wave(time * 920.0) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.38, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_menu_confirm_stream() -> AudioStreamWAV:
@@ -429,9 +389,9 @@ func _build_menu_confirm_stream() -> AudioStreamWAV:
 		var time: float = float(frame) / SAMPLE_RATE
 		var freq: float = 520.0 if progress < 0.45 else 780.0
 		var env: float = pow(1.0 - progress, 2.0)
-		var sample: float = (_triangle_wave(time * freq) * 0.68 + _sine_wave(time * freq * 1.5) * 0.32) * env
+		var sample: float = (AudioMathScript.triangle_wave(time * freq) * 0.68 + AudioMathScript.sine_wave(time * freq * 1.5) * 0.32) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.55, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_restart_stream() -> AudioStreamWAV:
@@ -444,9 +404,9 @@ func _build_restart_stream() -> AudioStreamWAV:
 		var time: float = float(frame) / SAMPLE_RATE
 		var env: float = pow(1.0 - progress, 1.5)
 		var freq: float = lerpf(260.0, 520.0, progress)
-		var sample: float = (_sine_wave(time * freq) * 0.55 + _triangle_wave(time * freq * 0.5) * 0.45) * env
+		var sample: float = (AudioMathScript.sine_wave(time * freq) * 0.55 + AudioMathScript.triangle_wave(time * freq * 0.5) * 0.45) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.52, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_player_entry_stream() -> AudioStreamWAV:
@@ -464,11 +424,11 @@ func _build_player_entry_stream() -> AudioStreamWAV:
 		var env: float = primary_env * 0.82 + bounce_env * 0.42
 		var freq: float = lerpf(170.0, 760.0, pow(progress, 0.68))
 		var bounce_freq: float = lerpf(360.0, 540.0, clampf((progress - 0.34) / 0.52, 0.0, 1.0))
-		var shimmer: float = _sine_wave(time * freq * 1.5) * 0.14
-		var bounce_layer: float = (_triangle_wave(time * bounce_freq) * 0.3 + _sine_wave(time * bounce_freq * 0.5) * 0.14) * bounce_env
-		var sample: float = (_triangle_wave(time * freq) * 0.48 + _sine_wave(time * freq * 0.5) * 0.2 + shimmer + bounce_layer) * env
+		var shimmer: float = AudioMathScript.sine_wave(time * freq * 1.5) * 0.14
+		var bounce_layer: float = (AudioMathScript.triangle_wave(time * bounce_freq) * 0.3 + AudioMathScript.sine_wave(time * bounce_freq * 0.5) * 0.14) * bounce_env
+		var sample: float = (AudioMathScript.triangle_wave(time * freq) * 0.48 + AudioMathScript.sine_wave(time * freq * 0.5) * 0.2 + shimmer + bounce_layer) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.72, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
+	return AudioStreamFactoryScript.make_wav_stream(data)
 
 
 func _build_invert_stream() -> AudioStreamWAV:
@@ -481,72 +441,6 @@ func _build_invert_stream() -> AudioStreamWAV:
 		var time: float = float(frame) / SAMPLE_RATE
 		var env: float = pow(1.0 - progress, 1.9)
 		var freq: float = 420.0 if progress < 0.5 else 260.0
-		var sample: float = (_triangle_wave(time * freq) * 0.5 + _square_wave(time * freq * 1.25) * 0.2) * env
+		var sample: float = (AudioMathScript.triangle_wave(time * freq) * 0.5 + AudioMathScript.square_wave(time * freq * 1.25) * 0.2) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.48, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
-
-
-func _make_wav_stream(data: PackedByteArray) -> AudioStreamWAV:
-	var stream: AudioStreamWAV = AudioStreamWAV.new()
-	stream.mix_rate = SAMPLE_RATE
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.stereo = false
-	stream.data = data
-	return stream
-
-
-func _gain_to_db(value: float) -> float:
-	if value <= 0.001:
-		return -60.0
-	return 20.0 * log(value) / log(10.0)
-
-
-func _midi_to_frequency(note: int) -> float:
-	return 440.0 * pow(2.0, float(note - 69) / 12.0)
-
-
-func _sine_wave(phase: float) -> float:
-	return sin(TAU * phase)
-
-
-func _triangle_wave(phase: float) -> float:
-	var cycle: float = phase - floor(phase)
-	return 1.0 - 4.0 * absf(cycle - 0.5)
-
-
-func _square_wave(phase: float) -> float:
-	return 1.0 if sin(TAU * phase) >= 0.0 else -1.0
-
-
-func _noise_like_sample(time: float, seed: int) -> float:
-	return sin(time * 913.0 + float(seed) * 1.7) * sin(time * 527.0 + float(seed) * 0.9)
-
-
-func _build_rhythm_pattern(rng: RandomNumberGenerator, steps_per_bar: int, style_id: int, channel_id: int) -> Array[float]:
-	var pattern: Array[float] = []
-	for step in range(steps_per_bar):
-		var value: float = 0.0
-		match channel_id:
-			0:
-				value = 1.0 if step == 0 or step == steps_per_bar / 2 else 0.0
-				if style_id == 1 and step % 4 == 2:
-					value = maxf(value, 0.68)
-				elif style_id == 2 and step % 3 == 0:
-					value = maxf(value, 0.64)
-				elif style_id == 3 and step in [0, steps_per_bar / 2, steps_per_bar - 2]:
-					value = maxf(value, 0.76)
-			1:
-				if style_id == 2:
-					value = 0.46 if step % 6 == 3 else 0.0
-				else:
-					value = 0.5 if step == steps_per_bar / 4 or step == (steps_per_bar * 3) / 4 else 0.0
-			2:
-				value = 0.12 + rng.randf() * 0.14 if step % 2 == 1 else 0.0
-				if style_id == 1 and step % 4 == 3:
-					value = maxf(value, 0.28)
-				elif style_id == 2 and step % 3 == 2:
-					value = maxf(value, 0.3)
-			_:
-				value = 0.34 if step % (3 if style_id == 2 else 4) == 0 else 0.0
-		pattern.append(value)
-	return pattern
+	return AudioStreamFactoryScript.make_wav_stream(data)

@@ -124,24 +124,38 @@ static func _build_fallback_candidate(width: int, height: int, rng: RandomNumber
 
 
 static func _pick_start_and_goal(width: int, height: int, rng: RandomNumberGenerator) -> Dictionary:
-	var minimum_distance: int = maxi(2, int(round(float(width + height) * 0.35)))
-	for _attempt in range(48):
+	var max_distance: int = width + height - 2
+	var minimum_distance: int = maxi(3, int(round(float(max_distance) * 0.62)))
+	var best_start: Vector2i = Vector2i.ZERO
+	var best_goal: Vector2i = Vector2i.ZERO
+	var best_distance: int = -1
+	for _attempt in range(64):
 		var start: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
 		var goal: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
 		if goal == start:
 			continue
-		if _manhattan_distance(start, goal) < minimum_distance:
+		var distance: int = _manhattan_distance(start, goal)
+		if distance > best_distance:
+			best_distance = distance
+			best_start = start
+			best_goal = goal
+		if distance < minimum_distance:
 			continue
 		return {
 			"start": start,
 			"goal": goal,
+		}
+	if best_distance >= 2:
+		return {
+			"start": best_start,
+			"goal": best_goal,
 		}
 	return {}
 
 
 static func _detour_budget(width: int, height: int, difficulty_scale: float) -> int:
 	var area: int = width * height
-	var raw_budget: int = clampi(2 + int(round(difficulty_scale * 2.0)) + int(round(float(area) / 10.0)), 2, maxi(2, area / 2))
+	var raw_budget: int = clampi(2 + int(round(difficulty_scale * 1.1)) + int(round(float(area) / 16.0)), 2, maxi(2, area / 3))
 	if raw_budget % 2 != 0:
 		raw_budget -= 1
 	return maxi(raw_budget, 0)
@@ -201,8 +215,10 @@ static func _build_values(width: int, height: int, path: Array[Vector2i], goal: 
 		path_lookup[cell] = true
 
 	var max_value: int = _get_max_cell_value(difficulty_scale)
-	var off_path_max: int = maxi(2, max_value - 2)
-	var path_min: int = mini(max_value, maxi(2, 1 + int(floor(difficulty_scale * 1.2))))
+	var off_path_max: int = maxi(2, max_value - 3)
+	var path_min: int = mini(max_value, maxi(1, 1 + int(floor(difficulty_scale * 0.65))))
+	var path_band: int = maxi(2, 2 + int(round(difficulty_scale * 0.6)))
+	var off_path_bias: int = mini(off_path_max, 2 + int(round(difficulty_scale * 0.35)))
 
 	for y in range(height):
 		for x in range(width):
@@ -210,9 +226,11 @@ static func _build_values(width: int, height: int, path: Array[Vector2i], goal: 
 			if cell == goal:
 				values[y][x] = 0
 			elif path_lookup.has(cell):
-				values[y][x] = rng.randi_range(path_min, max_value)
+				values[y][x] = rng.randi_range(path_min, mini(max_value, path_min + path_band))
 			else:
 				values[y][x] = rng.randi_range(1, off_path_max)
+				if rng.randf() < 0.65:
+					values[y][x] = mini(values[y][x], off_path_bias)
 
 	return values
 
@@ -227,7 +245,7 @@ static func _build_empty_values(width: int, height: int) -> Array[PackedInt32Arr
 
 
 static func _get_max_cell_value(difficulty_scale: float) -> int:
-	return clampi(4 + int(round(difficulty_scale * 2.1)), 5, 9)
+	return clampi(4 + int(round(difficulty_scale * 1.25)), 4, 8)
 
 
 static func _sum_path_total(values: Array[PackedInt32Array], path: Array[Vector2i], goal: Vector2i) -> int:

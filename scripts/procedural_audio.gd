@@ -9,6 +9,10 @@ var music_player: AudioStreamPlayer
 var sfx_players: Array[AudioStreamPlayer] = []
 var cached_sfx: Dictionary = {}
 var current_music_signature: String = ""
+var music_target_volume_db: float = -8.5
+var music_target_pitch_scale: float = 1.0
+var music_volume: float = 1.0
+var sfx_volume: float = 1.0
 
 
 func _ready() -> void:
@@ -18,7 +22,6 @@ func _ready() -> void:
 		return
 	_build_players()
 	_build_sfx_cache()
-	update_level_music(1, 1)
 
 
 func _exit_tree() -> void:
@@ -35,10 +38,60 @@ func _exit_tree() -> void:
 	current_music_signature = ""
 
 
-func update_level_music(level: int, level_seed: int) -> void:
+func _process(delta: float) -> void:
+	if not audio_enabled or music_player == null:
+		return
+	if not music_player.playing and music_player.stream != null:
+		music_player.play()
+	music_player.volume_db = lerpf(music_player.volume_db, music_target_volume_db + _gain_to_db(music_volume), clampf(delta * 3.2, 0.0, 1.0))
+	music_player.pitch_scale = lerpf(music_player.pitch_scale, music_target_pitch_scale, clampf(delta * 2.4, 0.0, 1.0))
+
+
+func start_run_music(run_seed: int) -> void:
 	if not audio_enabled:
 		return
-	_update_music_stream(level, level_seed)
+	_update_music_stream(run_seed)
+
+
+func update_level_music(level: int, level_seed: int) -> void:
+	start_run_music(level_seed)
+
+
+func sync_music_state(level: int, retries: int, player_total: int, goal_target: int, is_splash: bool, is_complete: bool) -> void:
+	if not audio_enabled or music_player == null:
+		return
+	var target_value: float = maxf(float(goal_target), 1.0)
+	var distance_ratio: float = absf(float(goal_target - player_total)) / target_value
+	var closeness: float = 1.0 - clampf(distance_ratio, 0.0, 1.0)
+	var level_energy: float = clampf(float(level - 1) / 12.0, 0.0, 1.0)
+	var retry_energy: float = minf(float(retries) * 0.06, 0.18)
+	if is_complete:
+		music_target_pitch_scale = 1.02 + closeness * 0.05
+		music_target_volume_db = -7.0 + closeness * 1.3
+		return
+	if is_splash:
+		music_target_pitch_scale = 0.97
+		music_target_volume_db = -9.8
+		return
+	var overshoot_energy: float = 0.04 if goal_target > 0 and player_total > goal_target else 0.0
+	music_target_pitch_scale = clampf(0.97 + level_energy * 0.06 + closeness * 0.03 + retry_energy + overshoot_energy, 0.95, 1.1)
+	music_target_volume_db = lerpf(-8.8, -5.6, closeness * 0.55 + level_energy * 0.35) + retry_energy * 2.6
+
+
+func set_music_volume(value: float) -> void:
+	music_volume = clampf(value, 0.0, 1.0)
+
+
+func get_music_volume() -> float:
+	return music_volume
+
+
+func set_sfx_volume(value: float) -> void:
+	sfx_volume = clampf(value, 0.0, 1.0)
+
+
+func get_sfx_volume() -> float:
+	return sfx_volume
 
 
 func play_move() -> void:
@@ -46,11 +99,19 @@ func play_move() -> void:
 
 
 func play_goal() -> void:
-	_play_sfx("goal")
+	play_success()
 
 
 func play_timeout() -> void:
-	_play_sfx("timeout")
+	play_failure()
+
+
+func play_success() -> void:
+	_play_sfx("success")
+
+
+func play_failure() -> void:
+	_play_sfx("failure")
 
 
 func play_menu_move() -> void:
@@ -63,6 +124,10 @@ func play_menu_confirm() -> void:
 
 func play_restart() -> void:
 	_play_sfx("restart")
+
+
+func play_player_entry() -> void:
+	_play_sfx("player_entry")
 
 
 func play_invert() -> void:
@@ -88,9 +153,12 @@ func _build_sfx_cache() -> void:
 	cached_sfx["move"] = _build_move_stream()
 	cached_sfx["goal"] = _build_goal_stream()
 	cached_sfx["timeout"] = _build_timeout_stream()
+	cached_sfx["success"] = _build_success_stream()
+	cached_sfx["failure"] = _build_failure_stream()
 	cached_sfx["menu_move"] = _build_menu_move_stream()
 	cached_sfx["menu_confirm"] = _build_menu_confirm_stream()
 	cached_sfx["restart"] = _build_restart_stream()
+	cached_sfx["player_entry"] = _build_player_entry_stream()
 	cached_sfx["invert"] = _build_invert_stream()
 
 
@@ -100,6 +168,7 @@ func _play_sfx(key: String) -> void:
 	if not cached_sfx.has(key):
 		return
 	var player: AudioStreamPlayer = _get_available_sfx_player()
+	player.volume_db = -5.0 + _gain_to_db(sfx_volume)
 	player.stream = cached_sfx[key]
 	player.play()
 
@@ -117,40 +186,44 @@ func _restart_music_loop() -> void:
 	music_player.play()
 
 
-func _update_music_stream(level: int, level_seed: int) -> void:
-	var signature: String = "%d:%d" % [level, level_seed]
+func _update_music_stream(run_seed: int) -> void:
+	var signature: String = "run:%d" % run_seed
 	if signature == current_music_signature:
 		return
 
 	current_music_signature = signature
-	music_player.stream = _build_music_stream(level, level_seed)
+	music_player.stream = _build_music_stream(run_seed)
+	music_player.volume_db = music_target_volume_db + _gain_to_db(music_volume)
+	music_player.pitch_scale = music_target_pitch_scale
 	music_player.play()
 
 
-func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
+func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.seed = maxi(level_seed, 1)
-	var style_id: int = int(level_seed % 4)
-	var bpm_ranges: Array = [[92.0, 108.0], [112.0, 132.0], [124.0, 148.0], [84.0, 100.0]]
-	var steps_per_bar_options: Array[int] = [16, 16, 12, 16]
-	var bar_options: Array[int] = [6, 8, 8, 7]
-	var root_ranges: Array = [[42, 51], [48, 58], [50, 60], [38, 47]]
+	rng.seed = maxi(run_seed, 1)
+	var style_id: int = int(abs(run_seed) % 5)
+	var bpm_ranges: Array = [[88.0, 102.0], [96.0, 112.0], [104.0, 118.0], [90.0, 106.0], [110.0, 126.0]]
+	var steps_per_bar_options: Array[int] = [16, 16, 12, 16, 8]
+	var bar_options: Array[int] = [8, 8, 9, 7, 10]
+	var root_ranges: Array = [[41, 49], [46, 54], [48, 57], [38, 45], [50, 58]]
 	var mode_options: Array = [
 		[[0, 2, 4, 7, 9, 11], [0, 4, 7, 9, 11, 14], [0, 2, 5, 7, 9, 12]],
 		[[0, 3, 5, 7, 10, 12], [0, 2, 3, 7, 8, 10], [0, 3, 5, 8, 10, 12]],
 		[[0, 2, 5, 7, 9, 12], [0, 4, 7, 9, 12, 14], [0, 2, 4, 7, 11, 14]],
 		[[0, 1, 5, 7, 8, 12], [0, 3, 5, 6, 10, 12], [0, 2, 5, 7, 8, 11]],
+		[[0, 2, 4, 7, 9, 12], [0, 2, 5, 7, 10, 12], [0, 4, 7, 9, 11, 12]],
 	]
 	var chord_options: Array = [
 		[[0, 5, 3, 4], [0, 3, 5, 2], [0, 4, 1, 5]],
 		[[0, 6, 5, 3], [0, 3, 1, 4], [0, 5, 4, 2]],
 		[[0, 4, 5, 3], [0, 2, 5, 4], [0, 5, 1, 4]],
 		[[0, 1, 5, 4], [0, 3, 2, 6], [0, 4, 1, 3]],
+		[[0, 4, 1, 5], [0, 5, 3, 4], [0, 2, 4, 5]],
 	]
 	var bpm_range: Array = bpm_ranges[style_id]
-	var bpm: float = rng.randf_range(float(bpm_range[0]), float(bpm_range[1])) + float(mini(level - 1, 6)) * 1.4
+	var bpm: float = rng.randf_range(float(bpm_range[0]), float(bpm_range[1]))
 	var steps_per_bar: int = steps_per_bar_options[style_id]
-	var bars: int = bar_options[style_id] + int(level % 2)
+	var bars: int = bar_options[style_id]
 	var pulses_per_beat: float = 3.0 if style_id == 2 else 4.0
 	var step_duration: float = 60.0 / bpm / pulses_per_beat
 	var total_duration: float = step_duration * float(steps_per_bar * bars)
@@ -165,8 +238,8 @@ func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
 	var bass_pattern: Array[int] = []
 	var counter_pattern: Array[int] = []
 	var total_steps: int = steps_per_bar * bars
-	var rest_chance: float = [0.22, 0.1, 0.28, 0.18][style_id]
-	var accent_jump_chance: float = [0.18, 0.34, 0.24, 0.16][style_id]
+	var rest_chance: float = [0.14, 0.08, 0.18, 0.16, 0.1][style_id]
+	var accent_jump_chance: float = [0.1, 0.2, 0.12, 0.08, 0.16][style_id]
 	for index in range(total_steps):
 		var chord_span: int = 4 if steps_per_bar >= 16 else 3
 		var chord_offset: int = int(chord_pattern[int(floor(float(index % steps_per_bar) / chord_span)) % chord_pattern.size()])
@@ -181,15 +254,15 @@ func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
 		else:
 			lead_pattern.append(lead_offset)
 		if index % 2 == 0:
-			bass_pattern.append(chord_offset - 12 + ([0, 0, 5, -5][style_id]))
+			bass_pattern.append(chord_offset - 12 + ([0, 0, 5, -5, 3][style_id]))
 		if index % 2 == (0 if style_id != 3 else 1):
 			counter_pattern.append(chord_offset + int(mode[(index + 2) % mode.size()]) + (12 if style_id == 1 else 0))
 		else:
 			counter_pattern.append(-1000)
 	var data: PackedByteArray = PackedByteArray()
 	data.resize(total_frames * 2)
-	var syncopation: float = 0.05 + rng.randf() * 0.14
-	var shimmer_rate: float = 1.5 + rng.randf() * 4.5
+	var syncopation: float = 0.03 + rng.randf() * 0.08
+	var shimmer_rate: float = 1.1 + rng.randf() * 2.4
 	var hat_seed: int = rng.randi()
 	var kick_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 0)
 	var clap_pattern: Array[float] = _build_rhythm_pattern(rng, steps_per_bar, style_id, 1)
@@ -228,13 +301,15 @@ func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
 		if lead_note_value > -1000:
 			match style_id:
 				0:
-					lead_sample = (_triangle_wave(time * lead_note) * 0.65 + _square_wave(time * lead_note * 0.5) * syncopation + _sine_wave(time * lead_note * 2.0) * 0.12) * lead_env
+					lead_sample = (_triangle_wave(time * lead_note) * 0.62 + _square_wave(time * lead_note * 0.5) * syncopation + _sine_wave(time * lead_note * 2.0) * 0.1) * lead_env
 				1:
-					lead_sample = (_square_wave(time * lead_note) * 0.42 + _triangle_wave(time * lead_note * 0.5) * 0.28 + _sine_wave(time * lead_note * 1.5) * 0.18) * lead_env
+					lead_sample = (_square_wave(time * lead_note) * 0.32 + _triangle_wave(time * lead_note * 0.5) * 0.34 + _sine_wave(time * lead_note * 1.5) * 0.18) * lead_env
 				2:
-					lead_sample = (_triangle_wave(time * lead_note) * 0.55 + _sine_wave(time * lead_note * 2.0) * 0.24 + _noise_like_sample(time, 3) * 0.04) * lead_env
+					lead_sample = (_triangle_wave(time * lead_note) * 0.54 + _sine_wave(time * lead_note * 2.0) * 0.2 + _noise_like_sample(time, 3) * 0.02) * lead_env
+				3:
+					lead_sample = (_sine_wave(time * lead_note) * 0.46 + _triangle_wave(time * lead_note * 0.5) * 0.34 + _square_wave(time * lead_note * 0.25) * 0.08) * lead_env
 				_:
-					lead_sample = (_sine_wave(time * lead_note) * 0.52 + _triangle_wave(time * lead_note * 0.5) * 0.3 + _square_wave(time * lead_note * 0.25) * 0.12) * lead_env
+					lead_sample = (_triangle_wave(time * lead_note) * 0.5 + _sine_wave(time * lead_note * 1.5) * 0.26 + _square_wave(time * lead_note * 0.25) * 0.08) * lead_env
 
 		var counter_sample: float = 0.0
 		if counter_note_value > -1000:
@@ -242,13 +317,13 @@ func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
 
 		var bass_sample: float = (_sine_wave(time * bass_note) * 0.78 + _triangle_wave(time * bass_note * 0.5) * 0.12) * bass_env
 		var pad_sample: float = (_sine_wave(time * pad_root) * 0.42 + _triangle_wave(time * pad_third) * 0.25 + _sine_wave(time * pad_root * 0.5) * 0.16) * pad_env
-		var kick_sample: float = _sine_wave(time * lerpf(56.0, 28.0, kick_phase)) * kick_env
-		var clap_sample: float = (_noise_like_sample(time, 5) * 0.82 + _triangle_wave(time * 1120.0) * 0.08) * clap_env
-		var hat_sample: float = (_noise_like_sample(time, hat_seed) * 0.72 + _square_wave(time * 3420.0) * 0.06) * hat_env
+		var kick_sample: float = _sine_wave(time * lerpf(52.0, 28.0, kick_phase)) * kick_env
+		var clap_sample: float = (_noise_like_sample(time, 5) * 0.64 + _triangle_wave(time * 1040.0) * 0.06) * clap_env
+		var hat_sample: float = (_noise_like_sample(time, hat_seed) * 0.48 + _square_wave(time * 2880.0) * 0.04) * hat_env
 		var sparkle_sample: float = _sine_wave(time * (lead_note * (1.4 + 0.3 * sin(time * shimmer_rate)))) * lead_env * 0.11
 		var sub_sample: float = _sine_wave(time * (bass_note * 0.5)) * sub_env
 
-		var mix: float = lead_sample * 0.24 + counter_sample * 0.12 + bass_sample * 0.2 + pad_sample * 0.15 + kick_sample * 0.17 + clap_sample * 0.07 + hat_sample * 0.04 + sparkle_sample + sub_sample * 0.08
+		var mix: float = lead_sample * 0.25 + counter_sample * 0.1 + bass_sample * 0.22 + pad_sample * 0.19 + kick_sample * 0.13 + clap_sample * 0.04 + hat_sample * 0.025 + sparkle_sample * 0.65 + sub_sample * 0.075
 
 		data.encode_s16(frame * 2, int(round(clampf(mix * 0.8, -1.0, 1.0) * 32767.0)))
 
@@ -256,6 +331,8 @@ func _build_music_stream(level: int, level_seed: int) -> AudioStreamWAV:
 	stream.mix_rate = SAMPLE_RATE
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
 	stream.stereo = false
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_end = total_frames
 	stream.data = data
 	return stream
 
@@ -289,6 +366,40 @@ func _build_goal_stream() -> AudioStreamWAV:
 		var env: float = pow(1.0 - local_progress, 1.8)
 		var sample: float = (_triangle_wave(time * notes[note_index]) * 0.6 + _sine_wave(time * notes[note_index] * 1.5) * 0.4) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.7, -1.0, 1.0) * 32767.0)))
+	return _make_wav_stream(data)
+
+
+func _build_success_stream() -> AudioStreamWAV:
+	var duration: float = 0.62
+	var total_frames: int = int(round(duration * SAMPLE_RATE))
+	var data: PackedByteArray = PackedByteArray()
+	data.resize(total_frames * 2)
+	var notes: Array[float] = [523.25, 659.25, 783.99, 1046.5]
+	for frame in range(total_frames):
+		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
+		var time: float = float(frame) / SAMPLE_RATE
+		var segment: int = mini(int(floor(progress * 4.0)), 3)
+		var local_progress: float = fposmod(progress * 4.0, 1.0)
+		var env: float = pow(1.0 - local_progress, 1.7)
+		var note: float = notes[segment]
+		var sample: float = (_triangle_wave(time * note) * 0.52 + _sine_wave(time * note * 1.5) * 0.28 + _sine_wave(time * note * 2.0) * 0.12) * env
+		data.encode_s16(frame * 2, int(round(clampf(sample * 0.74, -1.0, 1.0) * 32767.0)))
+	return _make_wav_stream(data)
+
+
+func _build_failure_stream() -> AudioStreamWAV:
+	var duration: float = 0.44
+	var total_frames: int = int(round(duration * SAMPLE_RATE))
+	var data: PackedByteArray = PackedByteArray()
+	data.resize(total_frames * 2)
+	for frame in range(total_frames):
+		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
+		var time: float = float(frame) / SAMPLE_RATE
+		var env: float = pow(1.0 - progress, 1.1)
+		var freq: float = lerpf(310.0, 118.0, progress)
+		var wobble: float = 1.0 + sin(TAU * time * 8.0) * 0.05
+		var sample: float = (_square_wave(time * freq * wobble) * 0.36 + _triangle_wave(time * freq * 0.5) * 0.26 + _noise_like_sample(time, 9) * 0.07) * env
+		data.encode_s16(frame * 2, int(round(clampf(sample * 0.8, -1.0, 1.0) * 32767.0)))
 	return _make_wav_stream(data)
 
 
@@ -352,6 +463,23 @@ func _build_restart_stream() -> AudioStreamWAV:
 	return _make_wav_stream(data)
 
 
+func _build_player_entry_stream() -> AudioStreamWAV:
+	var duration: float = 0.38
+	var total_frames: int = int(round(duration * SAMPLE_RATE))
+	var data: PackedByteArray = PackedByteArray()
+	data.resize(total_frames * 2)
+	for frame in range(total_frames):
+		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
+		var time: float = float(frame) / SAMPLE_RATE
+		var env: float = sin(progress * PI)
+		env *= env
+		var freq: float = lerpf(180.0, 690.0, pow(progress, 0.72))
+		var shimmer: float = _sine_wave(time * freq * 1.5) * 0.16
+		var sample: float = (_triangle_wave(time * freq) * 0.52 + _sine_wave(time * freq * 0.5) * 0.22 + shimmer) * env
+		data.encode_s16(frame * 2, int(round(clampf(sample * 0.68, -1.0, 1.0) * 32767.0)))
+	return _make_wav_stream(data)
+
+
 func _build_invert_stream() -> AudioStreamWAV:
 	var duration: float = 0.16
 	var total_frames: int = int(round(duration * SAMPLE_RATE))
@@ -374,6 +502,12 @@ func _make_wav_stream(data: PackedByteArray) -> AudioStreamWAV:
 	stream.stereo = false
 	stream.data = data
 	return stream
+
+
+func _gain_to_db(value: float) -> float:
+	if value <= 0.001:
+		return -60.0
+	return 20.0 * log(value) / log(10.0)
 
 
 func _midi_to_frequency(note: int) -> float:
@@ -405,23 +539,23 @@ func _build_rhythm_pattern(rng: RandomNumberGenerator, steps_per_bar: int, style
 			0:
 				value = 1.0 if step == 0 or step == steps_per_bar / 2 else 0.0
 				if style_id == 1 and step % 4 == 2:
-					value = maxf(value, 0.78)
+					value = maxf(value, 0.68)
 				elif style_id == 2 and step % 3 == 0:
-					value = maxf(value, 0.72)
+					value = maxf(value, 0.64)
 				elif style_id == 3 and step in [0, steps_per_bar / 2, steps_per_bar - 2]:
-					value = maxf(value, 0.85)
+					value = maxf(value, 0.76)
 			1:
 				if style_id == 2:
-					value = 0.74 if step % 6 == 3 else 0.0
+					value = 0.46 if step % 6 == 3 else 0.0
 				else:
-					value = 0.82 if step == steps_per_bar / 4 or step == (steps_per_bar * 3) / 4 else 0.0
+					value = 0.5 if step == steps_per_bar / 4 or step == (steps_per_bar * 3) / 4 else 0.0
 			2:
-				value = 0.3 + rng.randf() * 0.3 if step % 2 == 1 else 0.0
+				value = 0.12 + rng.randf() * 0.14 if step % 2 == 1 else 0.0
 				if style_id == 1 and step % 4 == 3:
-					value = maxf(value, 0.48)
+					value = maxf(value, 0.28)
 				elif style_id == 2 and step % 3 == 2:
-					value = maxf(value, 0.52)
+					value = maxf(value, 0.3)
 			_:
-				value = 0.45 if step % (3 if style_id == 2 else 4) == 0 else 0.0
+				value = 0.34 if step % (3 if style_id == 2 else 4) == 0 else 0.0
 		pattern.append(value)
 	return pattern

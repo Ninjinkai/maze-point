@@ -2,6 +2,7 @@ extends Node2D
 
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
 const ProceduralAudioScript = preload("res://scripts/procedural_audio.gd")
+const COMPANY_LOGO_PATH := "res://assets/branding/SlopwAIr_logo_vector.png"
 
 const BRIGHT_TEXT_COLOR := Color("f7fbff")
 const DARK_TEXT_COLOR := Color("102030")
@@ -9,8 +10,11 @@ const DARK_OUTLINE_COLOR := Color("09111d")
 const LIGHT_OUTLINE_COLOR := Color("eef4ff")
 const MARKER_INTRO_DURATION := 2.2
 const MARKER_INTRO_START_SCALE := 3.4
-const MOVE_ANIMATION_DURATION := 0.14
+const MOVE_ANIMATION_DURATION := 0.16
+const LANDING_BOUNCE_DURATION := 0.24
+const PLAYER_TOTAL_BOUNCE_DURATION := 0.26
 const GOAL_CLEAR_DURATION := 0.32
+const GOAL_FAIL_DURATION := 0.42
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
 const BASE_LEVEL_AREA := 16.0
@@ -21,12 +25,21 @@ const ACTION_ACCEPT := "maze_accept"
 const ACTION_RETRY := "maze_retry"
 const ACTION_END_RUN := "maze_end_run"
 const ACTION_INVERT := "maze_invert"
+const ACTION_PAUSE := "maze_pause"
 
 enum SplashMode {
 	NONE,
+	TITLE,
+	PAUSED,
 	LEVEL_COMPLETE,
 	LEVEL_FAILED,
 	RUN_COMPLETE,
+}
+
+enum GoalResolveOutcome {
+	NONE,
+	SUCCESS,
+	FAILURE,
 }
 
 var run_seed: int = 0
@@ -45,16 +58,19 @@ var max_cell_value: int = 9
 var player_total: int = 0
 var player_steps: int = 0
 var level_retries: int = 0
-var level_elapsed_time: float = 0.0
-var par_time_seconds: int = 0
+var run_total_resets: int = 0
 var completed: bool = false
 var pulse_time: float = 0.0
 var marker_intro_elapsed: float = MARKER_INTRO_DURATION
 var move_animation_elapsed: float = MOVE_ANIMATION_DURATION
+var landing_bounce_elapsed: float = LANDING_BOUNCE_DURATION
+var landing_bounce_cell: Vector2i = Vector2i(-1, -1)
+var player_total_bounce_elapsed: float = PLAYER_TOTAL_BOUNCE_DURATION
 var goal_clear_elapsed: float = GOAL_CLEAR_DURATION
+var goal_fail_elapsed: float = GOAL_FAIL_DURATION
 var move_animation_from: Vector2 = Vector2.ZERO
 var move_animation_to: Vector2 = Vector2.ZERO
-var pending_goal_completion: bool = false
+var pending_goal_outcome: GoalResolveOutcome = GoalResolveOutcome.NONE
 var joypad_x_state: int = 0
 var joypad_y_state: int = 0
 var run_total_score: int = 0
@@ -65,8 +81,7 @@ var invert_colors_enabled: bool = false
 var menu_focus_index: int = -1
 var player_skill_rating: float = 0.0
 var current_level_difficulty_scale: float = 1.0
-var last_failure_title: String = "TIME UP"
-var last_failure_caption: String = ""
+var tile_value_colors: Dictionary = {}
 
 var text_color: Color = BRIGHT_TEXT_COLOR
 var outline_color: Color = DARK_OUTLINE_COLOR
@@ -99,7 +114,14 @@ var end_run_button: Button
 var splash_action_button: Button
 var splash_retry_button: Button
 var splash_end_run_button: Button
+var splash_invert_button: Button
 var invert_button: Button
+var pause_button: Button
+var splash_logo_rect: TextureRect
+var splash_music_label: Label
+var splash_music_slider: HSlider
+var splash_sfx_label: Label
+var splash_sfx_slider: HSlider
 var splash_center: CenterContainer
 var top_panel: PanelContainer
 var bottom_panel: PanelContainer
@@ -109,7 +131,6 @@ var splash_score_label: Label
 var splash_optimal_label: Label
 var splash_retries_label: Label
 var splash_stars_label: Label
-var splash_caption_label: Label
 var advance_timer: Timer
 var ui_font: Font
 var audio_controller
@@ -124,7 +145,7 @@ func _ready() -> void:
 	_build_advance_timer()
 	_build_audio()
 	_refresh_ui_layout()
-	_start_new_run()
+	_show_title_screen()
 
 
 func _process(delta: float) -> void:
@@ -137,10 +158,6 @@ func _process(delta: float) -> void:
 	if splash_mode == SplashMode.NONE and not completed:
 		if _is_marker_intro_active():
 			marker_intro_elapsed = minf(marker_intro_elapsed + delta, MARKER_INTRO_DURATION)
-		else:
-			level_elapsed_time += delta
-			if not pending_goal_completion and not _is_goal_clear_active() and level_elapsed_time >= float(par_time_seconds):
-				_fail_level_timeout()
 
 		if splash_mode != SplashMode.NONE or completed:
 			_update_ui()
@@ -149,13 +166,20 @@ func _process(delta: float) -> void:
 
 		if _is_move_animation_active():
 			move_animation_elapsed = minf(move_animation_elapsed + delta, MOVE_ANIMATION_DURATION)
-			if not _is_move_animation_active() and pending_goal_completion:
-				goal_clear_elapsed = 0.0
-				pending_goal_completion = false
+			if not _is_move_animation_active() and pending_goal_outcome != GoalResolveOutcome.NONE:
+				_begin_goal_resolution()
 		elif _is_goal_clear_active():
 			goal_clear_elapsed = minf(goal_clear_elapsed + delta, GOAL_CLEAR_DURATION)
 			if not _is_goal_clear_active():
 				_finish_level_complete()
+		elif _is_goal_fail_active():
+			goal_fail_elapsed = minf(goal_fail_elapsed + delta, GOAL_FAIL_DURATION)
+			if not _is_goal_fail_active():
+				_finish_level_failed()
+		if _is_landing_bounce_active():
+			landing_bounce_elapsed = minf(landing_bounce_elapsed + delta, LANDING_BOUNCE_DURATION)
+		if _is_player_total_bounce_active():
+			player_total_bounce_elapsed = minf(player_total_bounce_elapsed + delta, PLAYER_TOTAL_BOUNCE_DURATION)
 
 		_update_ui()
 
@@ -167,8 +191,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		if splash_mode == SplashMode.NONE and _has_active_animation():
 			_skip_active_animations()
 			return
-		if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED:
+		if splash_mode != SplashMode.NONE:
 			_activate_focused_menu_button()
+		return
+
+	if event.is_action_pressed(ACTION_PAUSE):
+		if splash_mode == SplashMode.PAUSED:
+			_resume_from_pause()
+		elif splash_mode == SplashMode.NONE and not completed:
+			_show_pause_menu()
 		return
 
 	if event.is_action_pressed(ACTION_RETRY) and (splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED):
@@ -187,7 +218,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _handle_menu_navigation_input(event):
 			return
 
-	if splash_mode == SplashMode.RUN_COMPLETE or splash_mode == SplashMode.LEVEL_COMPLETE or completed:
+	if splash_mode != SplashMode.NONE or completed:
 		return
 
 	if _is_skip_input_event(event):
@@ -268,14 +299,21 @@ func _start_new_run() -> void:
 	level_retries = 0
 	run_total_score = 0
 	run_levels_cleared = 0
+	run_total_resets = 0
 	player_skill_rating = 0.0
+	_set_hud_visible(true)
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = false
+	_set_volume_controls_visible(false)
 	if audio_controller != null:
+		audio_controller.start_run_music(run_seed)
 		audio_controller.play_restart()
 	_generate_level(false)
 
 
 func _restart_level() -> void:
 	level_retries += 1
+	run_total_resets += 1
 	if audio_controller != null:
 		audio_controller.play_restart()
 	_generate_level(true)
@@ -296,10 +334,12 @@ func _generate_level(reuse_current_profile: bool = false) -> void:
 	joypad_y_state = 0
 	marker_intro_elapsed = 0.0
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
+	landing_bounce_elapsed = LANDING_BOUNCE_DURATION
+	landing_bounce_cell = Vector2i(-1, -1)
+	player_total_bounce_elapsed = PLAYER_TOTAL_BOUNCE_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
-	pending_goal_completion = false
-	last_failure_title = "TIME UP"
-	last_failure_caption = ""
+	goal_fail_elapsed = GOAL_FAIL_DURATION
+	pending_goal_outcome = GoalResolveOutcome.NONE
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
 
@@ -327,11 +367,11 @@ func _generate_level(reuse_current_profile: bool = false) -> void:
 	max_cell_value = int(puzzle.get("max_cell_value", 9))
 	player_total = 0
 	player_steps = 0
-	level_elapsed_time = 0.0
-	par_time_seconds = _calculate_par_time_seconds()
+	_rebuild_tile_value_colors()
 
 	if audio_controller != null:
-		audio_controller.update_level_music(level, level_seed)
+		audio_controller.play_player_entry()
+		_sync_music_state()
 
 	_update_ui()
 	queue_redraw()
@@ -355,18 +395,18 @@ func _get_level_dimensions(current_level: int) -> Vector2i:
 
 func _get_target_level_area(current_level: int) -> int:
 	var level_span: int = maxi(current_level - 1, 0)
-	var early_levels: int = mini(level_span, 5)
-	var late_levels: int = maxi(level_span - 5, 0)
-	var base_area: float = BASE_LEVEL_AREA + float(early_levels) * 4.0 + float(late_levels) * 2.5
-	var skill_bonus: float = _get_skill_pressure(current_level) * 4.0
-	return clampi(int(ceili(base_area + skill_bonus)), int(BASE_LEVEL_AREA), 54)
+	var early_levels: int = mini(level_span, 6)
+	var late_levels: int = maxi(level_span - 6, 0)
+	var base_area: float = BASE_LEVEL_AREA + float(early_levels) * 2.5 + float(late_levels) * 1.5
+	var skill_bonus: float = _get_skill_pressure(current_level) * 2.0
+	return clampi(int(ceili(base_area + skill_bonus)), int(BASE_LEVEL_AREA), 42)
 
 
 func _get_level_difficulty_scale(current_level: int) -> float:
 	var level_span: int = maxi(current_level - 1, 0)
-	var early_levels: int = mini(level_span, 5)
-	var late_levels: int = maxi(level_span - 5, 0)
-	return 1.0 + float(early_levels) * 0.16 + float(late_levels) * 0.08 + _get_skill_pressure(current_level) * 0.24
+	var early_levels: int = mini(level_span, 6)
+	var late_levels: int = maxi(level_span - 6, 0)
+	return 1.0 + float(early_levels) * 0.08 + float(late_levels) * 0.035 + _get_skill_pressure(current_level) * 0.12
 
 
 func _get_skill_pressure(current_level: int) -> float:
@@ -407,28 +447,59 @@ func _move_player_to(target_cell: Vector2i) -> void:
 	move_animation_from = Vector2(previous_cell)
 	move_animation_to = Vector2(target_cell)
 	move_animation_elapsed = 0.0
+	landing_bounce_cell = target_cell
+	landing_bounce_elapsed = 0.0
 	player_steps += 1
 
 	if player_cell != goal_cell:
 		player_total += _get_cell_value(player_cell)
+		player_total_bounce_elapsed = 0.0
 
 	if audio_controller != null:
 		audio_controller.play_move()
 
-	if player_total > goal_target:
-		_fail_level_target_exceeded()
-	elif player_cell == goal_cell and player_total == goal_target:
-		_complete_level()
+	if player_cell == goal_cell:
+		_resolve_goal_reached()
 	else:
 		_update_ui()
+		_sync_music_state()
 
 	queue_redraw()
 
 
 func _complete_level() -> void:
-	if audio_controller != null:
-		audio_controller.play_goal()
-	pending_goal_completion = true
+	_queue_goal_resolution(GoalResolveOutcome.SUCCESS)
+
+
+func _resolve_goal_reached() -> void:
+	if player_total == goal_target:
+		_complete_level()
+		return
+	_queue_goal_resolution(GoalResolveOutcome.FAILURE)
+
+
+func _queue_goal_resolution(outcome: GoalResolveOutcome) -> void:
+	pending_goal_outcome = outcome
+	if not _is_move_animation_active():
+		_begin_goal_resolution()
+
+
+func _begin_goal_resolution() -> void:
+	match pending_goal_outcome:
+		GoalResolveOutcome.SUCCESS:
+			goal_clear_elapsed = 0.0
+			goal_fail_elapsed = GOAL_FAIL_DURATION
+			if audio_controller != null:
+				audio_controller.play_success()
+		GoalResolveOutcome.FAILURE:
+			goal_fail_elapsed = 0.0
+			goal_clear_elapsed = GOAL_CLEAR_DURATION
+			if audio_controller != null:
+				audio_controller.play_failure()
+		_:
+			return
+	pending_goal_outcome = GoalResolveOutcome.NONE
+	_sync_music_state()
 
 
 func _finish_level_complete() -> void:
@@ -440,6 +511,12 @@ func _finish_level_complete() -> void:
 	_set_footer_enabled(false)
 	_update_ui()
 	_update_completion_splash()
+	_sync_music_state()
+
+
+func _finish_level_failed() -> void:
+	_record_level_result(false)
+	_show_failure_splash("TRY AGAIN")
 
 
 func _advance_to_next_level() -> void:
@@ -451,9 +528,9 @@ func _advance_to_next_level() -> void:
 
 
 func _update_ui() -> void:
-	maze_label.text = "LEVEL %d" % level
-	score_label.text = "TOTAL %d / %d" % [player_total, goal_target]
-	timer_label.text = "MOVES %d  |  TIME %dS" % [player_steps, _current_time_left_seconds()]
+	maze_label.text = "MAZE POINT"
+	score_label.text = "LEVEL %d  |  %d / %d" % [level, player_total, goal_target]
+	timer_label.text = "%d MOVES" % player_steps
 	invert_button.text = _get_invert_button_text()
 
 
@@ -461,42 +538,47 @@ func _update_completion_splash() -> void:
 	var stars: int = _calculate_star_rating()
 	splash_title_label.text = "LEVEL CLEAR"
 	splash_score_label.text = "TOTAL %d / %d  |  MOVES %d" % [player_total, goal_target, player_steps]
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = false
 	splash_optimal_label.visible = true
 	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = true
-	splash_retries_label.text = "TIME %dS  |  RETRIES %d" % [_current_elapsed_seconds(), level_retries]
+	splash_retries_label.text = "RETRIES %d" % level_retries
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
-	splash_caption_label.visible = false
-	splash_caption_label.text = ""
 	splash_action_button.text = "NEXT"
 	splash_action_button.visible = true
 	splash_retry_button.visible = true
 	splash_end_run_button.visible = true
+	splash_invert_button.visible = false
+	_set_volume_controls_visible(false)
 	_set_splash_visible(true)
 	_sync_menu_focus(true)
 
 
-func _show_failure_splash(title: String, caption: String) -> void:
+func _show_failure_splash(title: String) -> void:
 	splash_mode = SplashMode.LEVEL_FAILED
 	completed = true
 	_set_footer_enabled(false)
 	splash_title_label.text = title
 	splash_score_label.text = "TOTAL %d / %d  |  MOVES %d" % [player_total, goal_target, player_steps]
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = false
 	splash_optimal_label.visible = true
 	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = false
 	splash_retries_label.text = ""
 	splash_stars_label.visible = false
-	splash_caption_label.visible = caption != ""
-	splash_caption_label.text = caption
 	splash_action_button.text = "RETRY"
 	splash_action_button.visible = true
 	splash_retry_button.visible = false
 	splash_end_run_button.visible = true
+	splash_invert_button.visible = false
+	_set_volume_controls_visible(false)
 	_set_splash_visible(true)
 	_sync_menu_focus(true)
+	_sync_music_state()
 
 
 func _show_run_complete_splash() -> void:
@@ -504,18 +586,87 @@ func _show_run_complete_splash() -> void:
 	completed = true
 	_set_footer_enabled(false)
 	splash_title_label.text = "RUN OVER"
-	splash_score_label.text = "STARS %d" % run_total_score
+	splash_score_label.text = "SCORE %d" % _calculate_final_run_score()
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = false
 	splash_optimal_label.visible = true
 	splash_optimal_label.text = "LEVELS %d" % run_levels_cleared
-	splash_retries_label.visible = false
-	splash_retries_label.text = ""
-	splash_stars_label.visible = false
-	splash_caption_label.visible = false
-	splash_caption_label.text = ""
+	splash_retries_label.visible = true
+	splash_retries_label.text = "RETRIES %d" % run_total_resets
+	splash_stars_label.visible = true
+	splash_stars_label.text = "STARS %d" % run_total_score
+	splash_stars_label.add_theme_color_override("font_color", goal_color)
 	splash_action_button.text = _get_splash_action_text()
 	splash_action_button.visible = true
 	splash_retry_button.visible = false
 	splash_end_run_button.visible = false
+	splash_invert_button.visible = false
+	_set_volume_controls_visible(false)
+	_set_splash_visible(true)
+	_sync_menu_focus(true)
+	_sync_music_state()
+
+
+func _show_pause_menu() -> void:
+	if splash_mode != SplashMode.NONE or completed:
+		return
+	splash_mode = SplashMode.PAUSED
+	_set_footer_enabled(false)
+	splash_title_label.text = "PAUSED"
+	splash_score_label.text = "TOTAL %d / %d  |  MOVES %d" % [player_total, goal_target, player_steps]
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = false
+	splash_optimal_label.visible = true
+	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
+	splash_retries_label.visible = true
+	splash_retries_label.text = "RETRIES %d" % level_retries
+	splash_stars_label.visible = false
+	splash_action_button.text = "RESUME"
+	splash_action_button.visible = true
+	splash_retry_button.text = "RETRY"
+	splash_retry_button.visible = true
+	splash_invert_button.visible = true
+	splash_end_run_button.visible = true
+	_set_volume_controls_visible(true)
+	_sync_volume_controls()
+	_set_splash_visible(true)
+	_sync_menu_focus(true)
+	_sync_music_state()
+
+
+func _resume_from_pause() -> void:
+	if splash_mode != SplashMode.PAUSED:
+		return
+	splash_mode = SplashMode.NONE
+	_set_footer_enabled(true)
+	_set_splash_visible(false)
+	_update_ui()
+	_sync_music_state()
+
+
+func _show_title_screen() -> void:
+	splash_mode = SplashMode.TITLE
+	completed = true
+	grid_width = 0
+	grid_height = 0
+	_set_hud_visible(false)
+	_set_footer_enabled(false)
+	splash_title_label.text = "MAZE POINT"
+	splash_score_label.text = "by"
+	splash_score_label.visible = true
+	splash_optimal_label.visible = false
+	splash_optimal_label.text = ""
+	splash_retries_label.visible = false
+	splash_retries_label.text = ""
+	splash_stars_label.visible = false
+	splash_action_button.text = "START"
+	splash_action_button.visible = true
+	splash_retry_button.visible = false
+	splash_end_run_button.visible = false
+	splash_invert_button.visible = false
+	_set_volume_controls_visible(false)
+	if splash_logo_rect != null:
+		splash_logo_rect.visible = true
 	_set_splash_visible(true)
 	_sync_menu_focus(true)
 
@@ -524,9 +675,8 @@ func _record_level_result(was_successful: bool) -> void:
 	var sample: float = 0.0
 	if was_successful:
 		var path_efficiency: float = clampf(float(optimal_steps) / maxf(float(player_steps), float(optimal_steps)), 0.0, 1.0)
-		var time_efficiency: float = clampf(float(_current_time_left_seconds()) / maxf(float(par_time_seconds), 1.0), 0.0, 1.0)
 		var retry_penalty: float = minf(float(level_retries) * 0.14, 0.35)
-		sample = clampf(path_efficiency * 0.6 + time_efficiency * 0.4 - retry_penalty, 0.0, 1.0)
+		sample = clampf(path_efficiency - retry_penalty, 0.0, 1.0)
 	else:
 		sample = maxf(0.0, player_skill_rating - 0.16 - float(level_retries) * 0.03)
 
@@ -534,13 +684,23 @@ func _record_level_result(was_successful: bool) -> void:
 	player_skill_rating = clampf(lerpf(player_skill_rating, sample, adapt_rate), 0.0, 1.0)
 
 
+func _sync_music_state() -> void:
+	if audio_controller == null:
+		return
+	audio_controller.sync_music_state(level, level_retries, player_total, goal_target, splash_mode != SplashMode.NONE, splash_mode == SplashMode.LEVEL_COMPLETE)
+
+
 func _calculate_star_rating() -> int:
 	var move_margin: int = maxi(player_steps - optimal_steps, 0)
-	if move_margin == 0 and level_retries == 0:
+	if move_margin == 0:
 		return 3
-	if move_margin <= 2 + int(round(current_level_difficulty_scale)) and level_retries <= 1:
+	if move_margin <= maxi(2, int(ceili(current_level_difficulty_scale))):
 		return 2
 	return 1
+
+
+func _calculate_final_run_score() -> int:
+	return maxi(run_total_score * 120 + run_levels_cleared * 45 - run_total_resets * 18, 0)
 
 
 func _build_star_string(stars: int) -> String:
@@ -675,24 +835,30 @@ func _build_ui() -> void:
 	maze_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_row.add_child(maze_label)
 
-	score_label = Label.new()
-	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	score_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top_row.add_child(score_label)
+	pause_button = _make_button("||")
+	pause_button.custom_minimum_size = Vector2(round(88.0 * _get_ui_scale()), 0.0)
+	pause_button.focus_mode = Control.FOCUS_NONE
+	pause_button.pressed.connect(_show_pause_menu)
+	top_row.add_child(pause_button)
 
 	var detail_row: HBoxContainer = HBoxContainer.new()
 	detail_row.add_theme_constant_override("separation", 14)
 	top_content.add_child(detail_row)
 
+	score_label = Label.new()
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	score_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_row.add_child(score_label)
+
 	timer_label = Label.new()
-	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	detail_row.add_child(timer_label)
 
 	invert_button = _make_button(_get_invert_button_text())
 	invert_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	invert_button.focus_mode = Control.FOCUS_NONE
 	invert_button.pressed.connect(_toggle_invert_colors)
-	_connect_button_focus(invert_button)
 	detail_row.add_child(invert_button)
 
 	bottom_panel = PanelContainer.new()
@@ -707,17 +873,17 @@ func _build_ui() -> void:
 
 	retry_button = _make_button("RETRY")
 	retry_button.pressed.connect(_restart_level)
-	_connect_button_focus(retry_button)
+	retry_button.focus_mode = Control.FOCUS_NONE
 	bottom_content.add_child(retry_button)
 
 	end_run_button = _make_button("END RUN")
 	end_run_button.pressed.connect(_end_run)
-	_connect_button_focus(end_run_button)
+	end_run_button.focus_mode = Control.FOCUS_NONE
 	bottom_content.add_child(end_run_button)
 
 	splash_center = CenterContainer.new()
 	splash_center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	splash_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	splash_center.mouse_filter = Control.MOUSE_FILTER_PASS
 	ui.add_child(splash_center)
 
 	splash_panel = PanelContainer.new()
@@ -737,6 +903,14 @@ func _build_ui() -> void:
 	splash_score_label = _make_splash_stat_label()
 	splash_content.add_child(splash_score_label)
 
+	splash_logo_rect = TextureRect.new()
+	splash_logo_rect.texture = _load_company_logo_texture()
+	splash_logo_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	splash_logo_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	splash_logo_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	splash_logo_rect.visible = false
+	splash_content.add_child(splash_logo_rect)
+
 	splash_optimal_label = _make_splash_stat_label()
 	splash_content.add_child(splash_optimal_label)
 
@@ -747,26 +921,57 @@ func _build_ui() -> void:
 	splash_stars_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	splash_content.add_child(splash_stars_label)
 
-	splash_caption_label = Label.new()
-	splash_caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	splash_caption_label.visible = false
-	splash_content.add_child(splash_caption_label)
+	splash_music_label = _make_splash_stat_label()
+	splash_music_label.text = "MUSIC"
+	splash_music_label.visible = false
+	splash_content.add_child(splash_music_label)
+
+	splash_music_slider = HSlider.new()
+	splash_music_slider.min_value = 0.0
+	splash_music_slider.max_value = 1.0
+	splash_music_slider.step = 0.05
+	splash_music_slider.focus_mode = Control.FOCUS_ALL
+	splash_music_slider.visible = false
+	splash_music_slider.value_changed.connect(_handle_music_volume_changed)
+	_connect_menu_focus(splash_music_slider)
+	splash_content.add_child(splash_music_slider)
+
+	splash_sfx_label = _make_splash_stat_label()
+	splash_sfx_label.text = "SFX"
+	splash_sfx_label.visible = false
+	splash_content.add_child(splash_sfx_label)
+
+	splash_sfx_slider = HSlider.new()
+	splash_sfx_slider.min_value = 0.0
+	splash_sfx_slider.max_value = 1.0
+	splash_sfx_slider.step = 0.05
+	splash_sfx_slider.focus_mode = Control.FOCUS_ALL
+	splash_sfx_slider.visible = false
+	splash_sfx_slider.value_changed.connect(_handle_sfx_volume_changed)
+	_connect_menu_focus(splash_sfx_slider)
+	splash_content.add_child(splash_sfx_slider)
 
 	splash_action_button = _make_button(_get_splash_action_text())
 	splash_action_button.pressed.connect(_handle_splash_action)
-	_connect_button_focus(splash_action_button)
+	_connect_menu_focus(splash_action_button)
 	splash_content.add_child(splash_action_button)
 
 	splash_retry_button = _make_button("RETRY")
 	splash_retry_button.pressed.connect(_handle_splash_retry)
 	splash_retry_button.visible = false
-	_connect_button_focus(splash_retry_button)
+	_connect_menu_focus(splash_retry_button)
 	splash_content.add_child(splash_retry_button)
+
+	splash_invert_button = _make_button("INVERT")
+	splash_invert_button.pressed.connect(_handle_splash_invert)
+	splash_invert_button.visible = false
+	_connect_menu_focus(splash_invert_button)
+	splash_content.add_child(splash_invert_button)
 
 	splash_end_run_button = _make_button("END RUN")
 	splash_end_run_button.pressed.connect(_handle_splash_end_run)
 	splash_end_run_button.visible = false
-	_connect_button_focus(splash_end_run_button)
+	_connect_menu_focus(splash_end_run_button)
 	splash_content.add_child(splash_end_run_button)
 
 	_apply_palette_to_ui()
@@ -789,6 +994,10 @@ func _handle_splash_action() -> void:
 	if audio_controller != null:
 		audio_controller.play_menu_confirm()
 	match splash_mode:
+		SplashMode.TITLE:
+			_start_new_run()
+		SplashMode.PAUSED:
+			_resume_from_pause()
 		SplashMode.LEVEL_COMPLETE:
 			_advance_to_next_level()
 		SplashMode.LEVEL_FAILED:
@@ -798,6 +1007,12 @@ func _handle_splash_action() -> void:
 
 
 func _handle_splash_retry() -> void:
+	if splash_mode == SplashMode.PAUSED:
+		splash_mode = SplashMode.NONE
+		completed = false
+		_restart_level()
+		return
+
 	if splash_mode == SplashMode.LEVEL_FAILED:
 		splash_mode = SplashMode.NONE
 		completed = false
@@ -820,6 +1035,13 @@ func _handle_splash_end_run() -> void:
 	_show_run_complete_splash()
 
 
+func _handle_splash_invert() -> void:
+	if splash_mode != SplashMode.PAUSED:
+		return
+	_toggle_invert_colors()
+	_show_pause_menu()
+
+
 func _configure_input_actions() -> void:
 	_ensure_key_action(ACTION_ACCEPT, KEY_ENTER)
 	_ensure_key_action(ACTION_ACCEPT, KEY_KP_ENTER)
@@ -827,10 +1049,12 @@ func _configure_input_actions() -> void:
 	_ensure_joypad_action(ACTION_ACCEPT, JOY_BUTTON_A)
 	_ensure_key_action(ACTION_RETRY, KEY_R)
 	_ensure_joypad_action(ACTION_RETRY, JOY_BUTTON_Y)
-	_ensure_key_action(ACTION_END_RUN, KEY_ESCAPE)
-	_ensure_joypad_action(ACTION_END_RUN, JOY_BUTTON_START)
+	_ensure_key_action(ACTION_END_RUN, KEY_E)
+	_ensure_joypad_action(ACTION_END_RUN, JOY_BUTTON_B)
 	_ensure_key_action(ACTION_INVERT, KEY_I)
 	_ensure_joypad_action(ACTION_INVERT, JOY_BUTTON_X)
+	_ensure_key_action(ACTION_PAUSE, KEY_ESCAPE)
+	_ensure_joypad_action(ACTION_PAUSE, JOY_BUTTON_START)
 
 
 func _ensure_key_action(action_name: StringName, keycode: Key) -> void:
@@ -856,6 +1080,8 @@ func _ensure_joypad_action(action_name: StringName, button_index: JoyButton) -> 
 
 
 func _get_splash_action_text() -> String:
+	if splash_mode == SplashMode.TITLE:
+		return "START"
 	if splash_mode == SplashMode.RUN_COMPLETE:
 		return "NEW RUN"
 	return "NEXT"
@@ -883,13 +1109,13 @@ func _make_button(text: String) -> Button:
 	return button
 
 
-func _connect_button_focus(button: Button) -> void:
-	button.focus_entered.connect(func() -> void:
-		_set_menu_focus_from_button(button)
+func _connect_menu_focus(control: Control) -> void:
+	control.focus_entered.connect(func() -> void:
+		_set_menu_focus_from_control(control)
 	)
-	button.mouse_entered.connect(func() -> void:
-		if button.visible and not button.disabled:
-			button.grab_focus()
+	control.mouse_entered.connect(func() -> void:
+		if control.visible:
+			control.grab_focus()
 	)
 
 
@@ -897,6 +1123,53 @@ func _make_splash_stat_label() -> Label:
 	var label: Label = Label.new()
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	return label
+
+
+func _load_company_logo_texture() -> Texture2D:
+	var image: Image = Image.new()
+	if image.load(ProjectSettings.globalize_path(COMPANY_LOGO_PATH)) != OK:
+		return null
+	return ImageTexture.create_from_image(image)
+
+
+func _set_hud_visible(is_visible: bool) -> void:
+	if top_panel != null:
+		top_panel.visible = is_visible
+	if bottom_panel != null:
+		bottom_panel.visible = is_visible
+	_refresh_ui_layout()
+
+
+func _set_volume_controls_visible(is_visible: bool) -> void:
+	if splash_music_label != null:
+		splash_music_label.visible = is_visible
+	if splash_music_slider != null:
+		splash_music_slider.visible = is_visible
+	if splash_sfx_label != null:
+		splash_sfx_label.visible = is_visible
+	if splash_sfx_slider != null:
+		splash_sfx_slider.visible = is_visible
+
+
+func _sync_volume_controls() -> void:
+	if audio_controller == null:
+		return
+	if splash_music_slider != null:
+		splash_music_slider.set_value_no_signal(audio_controller.get_music_volume())
+	if splash_sfx_slider != null:
+		splash_sfx_slider.set_value_no_signal(audio_controller.get_sfx_volume())
+
+
+func _handle_music_volume_changed(value: float) -> void:
+	if audio_controller == null:
+		return
+	audio_controller.set_music_volume(value)
+
+
+func _handle_sfx_volume_changed(value: float) -> void:
+	if audio_controller == null:
+		return
+	audio_controller.set_sfx_volume(value)
 
 
 func _is_marker_intro_active() -> bool:
@@ -907,12 +1180,24 @@ func _is_goal_clear_active() -> bool:
 	return goal_clear_elapsed < GOAL_CLEAR_DURATION
 
 
+func _is_goal_fail_active() -> bool:
+	return goal_fail_elapsed < GOAL_FAIL_DURATION
+
+
 func _is_move_animation_active() -> bool:
 	return move_animation_elapsed < MOVE_ANIMATION_DURATION
 
 
+func _is_landing_bounce_active() -> bool:
+	return landing_bounce_elapsed < LANDING_BOUNCE_DURATION and landing_bounce_cell.x >= 0
+
+
+func _is_player_total_bounce_active() -> bool:
+	return player_total_bounce_elapsed < PLAYER_TOTAL_BOUNCE_DURATION
+
+
 func _has_active_animation() -> bool:
-	return _is_marker_intro_active() or _is_move_animation_active() or _is_goal_clear_active()
+	return _is_marker_intro_active() or _is_move_animation_active() or _is_landing_bounce_active() or _is_goal_clear_active() or _is_goal_fail_active() or pending_goal_outcome != GoalResolveOutcome.NONE
 
 
 func _skip_active_animations() -> void:
@@ -920,17 +1205,25 @@ func _skip_active_animations() -> void:
 	if _is_goal_clear_active():
 		move_animation_elapsed = MOVE_ANIMATION_DURATION
 		goal_clear_elapsed = GOAL_CLEAR_DURATION
-		pending_goal_completion = false
+		pending_goal_outcome = GoalResolveOutcome.NONE
 		_finish_level_complete()
+		return
+	if _is_goal_fail_active():
+		move_animation_elapsed = MOVE_ANIMATION_DURATION
+		goal_fail_elapsed = GOAL_FAIL_DURATION
+		pending_goal_outcome = GoalResolveOutcome.NONE
+		_finish_level_failed()
 		return
 	if _is_move_animation_active():
 		move_animation_elapsed = MOVE_ANIMATION_DURATION
-		if pending_goal_completion:
-			goal_clear_elapsed = 0.0
-			pending_goal_completion = false
+		landing_bounce_elapsed = LANDING_BOUNCE_DURATION
+		if pending_goal_outcome != GoalResolveOutcome.NONE:
+			_begin_goal_resolution()
 		return
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
+	landing_bounce_elapsed = LANDING_BOUNCE_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
+	goal_fail_elapsed = GOAL_FAIL_DURATION
 
 
 func _is_skip_input_event(event: InputEvent) -> bool:
@@ -978,9 +1271,25 @@ func _get_player_draw_position() -> Vector2:
 		return _cell_to_screen(player_cell)
 
 	var progress: float = clampf(move_animation_elapsed / MOVE_ANIMATION_DURATION, 0.0, 1.0)
-	var eased_progress: float = 1.0 - pow(1.0 - progress, 3.0)
+	var eased_progress: float = 1.0 - pow(1.0 - progress, 2.2)
 	var animated_cell: Vector2 = move_animation_from.lerp(move_animation_to, eased_progress)
-	return _cell_vector_to_screen(animated_cell)
+	var screen_position: Vector2 = _cell_vector_to_screen(animated_cell)
+	var hop_height: float = sin(progress * PI) * _get_cell_size() * 0.18
+	return screen_position + Vector2(0.0, -hop_height)
+
+
+func _get_player_move_scale() -> float:
+	if not _is_move_animation_active():
+		return 1.0
+	var progress: float = clampf(move_animation_elapsed / MOVE_ANIMATION_DURATION, 0.0, 1.0)
+	return 1.0 + sin(progress * PI) * 0.12
+
+
+func _get_player_total_bounce_scale() -> float:
+	if not _is_player_total_bounce_active():
+		return 1.0
+	var progress: float = clampf(player_total_bounce_elapsed / PLAYER_TOTAL_BOUNCE_DURATION, 0.0, 1.0)
+	return 1.0 + sin(progress * PI) * 0.22
 
 
 func _get_goal_clear_scale() -> float:
@@ -992,6 +1301,21 @@ func _get_goal_clear_scale() -> float:
 	return 1.0 + wave * 0.5
 
 
+func _get_goal_fail_scale() -> float:
+	if not _is_goal_fail_active():
+		return 1.0
+	var progress: float = clampf(goal_fail_elapsed / GOAL_FAIL_DURATION, 0.0, 1.0)
+	return 1.0 + sin(progress * PI) * 0.18
+
+
+func _get_goal_fail_shake(cell_size: float) -> Vector2:
+	if not _is_goal_fail_active():
+		return Vector2.ZERO
+	var progress: float = clampf(goal_fail_elapsed / GOAL_FAIL_DURATION, 0.0, 1.0)
+	var damping: float = 1.0 - progress
+	return Vector2(sin(progress * TAU * 6.0) * cell_size * 0.045 * damping, 0.0)
+
+
 func _get_player_clear_scale() -> float:
 	if not _is_goal_clear_active():
 		return 1.0
@@ -1001,56 +1325,64 @@ func _get_player_clear_scale() -> float:
 	return lerpf(1.24, 0.92, eased_progress)
 
 
+func _get_player_fail_scale() -> float:
+	if not _is_goal_fail_active():
+		return 1.0
+	var progress: float = clampf(goal_fail_elapsed / GOAL_FAIL_DURATION, 0.0, 1.0)
+	return 1.0 + sin(progress * PI) * 0.1
+
+
 func _apply_palette(level_value: int) -> void:
 	var difficulty: float = clampf(float(level_value - 1) / 14.0, 0.0, 1.0)
 	var accent_hue: float = lerpf(0.58, 0.03, difficulty)
 	if invert_colors_enabled:
 		text_color = DARK_TEXT_COLOR
 		outline_color = LIGHT_OUTLINE_COLOR
-		background_color = Color("eef4fb")
-		background_glow_color = Color.from_hsv(accent_hue, 0.2, 0.95)
-		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.1, 1.0), 0.26, 0.84)
-		playfield_color = Color("ffffff")
-		playfield_trim_color = Color.from_hsv(accent_hue, 0.42, 0.62)
-		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.36, 0.5)
+		background_color = Color("f4f0ff")
+		background_glow_color = Color.from_hsv(accent_hue, 0.24, 0.98)
+		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.12, 1.0), 0.3, 0.9)
+		playfield_color = Color("fffaf8")
+		playfield_trim_color = Color.from_hsv(accent_hue, 0.46, 0.66)
+		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.4, 0.56)
 		start_color = Color.from_hsv(0.35, 0.45, 0.7)
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.74, 0.9)
 		warning_color = Color.from_hsv(0.02 + 0.01 * difficulty, 0.68, 0.84)
-		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.58, 0.82)
+		player_color = Color("d774af")
 		player_core_color = Color("ffe8b6")
 		cell_number_color = Color("203147")
-		panel_color = Color("e6eef8")
-		panel_border_color = playfield_trim_color
-		retry_button_color = Color("d8e3f2")
-		retry_button_hover_color = Color("c8d9ee")
-		retry_button_pressed_color = Color("b7cce6")
-		end_button_color = Color("d5def0")
-		end_button_hover_color = Color("c3d1ea")
-		end_button_pressed_color = Color("b2c6e5")
+		panel_color = Color("efe6ff")
+		panel_border_color = Color("b58cff")
+		retry_button_color = Color("d8d1ff")
+		retry_button_hover_color = Color("e5dcff")
+		retry_button_pressed_color = Color("c7bcff")
+		end_button_color = Color("ffd1e6")
+		end_button_hover_color = Color("ffddef")
+		end_button_pressed_color = Color("ffb7da")
 	else:
 		text_color = BRIGHT_TEXT_COLOR
 		outline_color = DARK_OUTLINE_COLOR
-		background_color = Color("09111d")
-		background_glow_color = Color.from_hsv(accent_hue, 0.34, 0.44)
-		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.13, 1.0), 0.28, 0.72)
-		playfield_color = Color("142032")
-		playfield_trim_color = Color.from_hsv(accent_hue, 0.44, 0.92)
-		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.42, 0.82)
+		background_color = Color("130f24")
+		background_glow_color = Color.from_hsv(accent_hue, 0.42, 0.56)
+		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.16, 1.0), 0.34, 0.88)
+		playfield_color = Color("1f1638")
+		playfield_trim_color = Color.from_hsv(accent_hue, 0.56, 0.96)
+		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.48, 0.88)
 		start_color = Color("5fd08c")
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.72, 0.98)
 		warning_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
-		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.56, 0.98)
+		player_color = Color("ff78bf")
 		player_core_color = Color("ffe7b3")
 		cell_number_color = Color("d7e3f4")
-		panel_color = Color("1b2a40")
-		panel_border_color = playfield_trim_color
-		retry_button_color = Color("314969")
-		retry_button_hover_color = Color("3e5a81")
-		retry_button_pressed_color = Color("5876a6")
-		end_button_color = Color("463c7a")
-		end_button_hover_color = Color("594d96")
-		end_button_pressed_color = Color("6b5fb0")
+		panel_color = Color("2a1b52")
+		panel_border_color = Color("6c4cff")
+		retry_button_color = Color("4f4bb5")
+		retry_button_hover_color = Color("6765c9")
+		retry_button_pressed_color = Color("807de0")
+		end_button_color = Color("ba4f9c")
+		end_button_hover_color = Color("d465ad")
+		end_button_pressed_color = Color("e87cc0")
 	_apply_palette_to_ui()
+	_rebuild_tile_value_colors()
 
 
 func _apply_palette_to_ui() -> void:
@@ -1061,49 +1393,37 @@ func _apply_palette_to_ui() -> void:
 	bottom_panel.add_theme_stylebox_override("panel", _make_panel_style(panel_color, panel_border_color, secondary_glow_color))
 	splash_panel.add_theme_stylebox_override("panel", _make_panel_style(panel_color.lightened(0.06), panel_border_color.lightened(0.08), goal_color))
 
-	maze_label.add_theme_color_override("font_color", player_color)
-	maze_label.add_theme_color_override("font_outline_color", outline_color)
-	score_label.add_theme_color_override("font_color", goal_color)
-	score_label.add_theme_color_override("font_outline_color", outline_color)
-	timer_label.add_theme_color_override("font_color", text_color)
-	timer_label.add_theme_color_override("font_outline_color", outline_color)
+	maze_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	maze_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	score_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	score_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	timer_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	timer_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 
-	retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
-	retry_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
-	retry_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
-	retry_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
-	end_run_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
-	end_run_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
-	end_run_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
-	end_run_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
-	invert_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
-	invert_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
-	invert_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
-	invert_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
-	splash_action_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
-	splash_action_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
-	splash_action_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
-	splash_action_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
-	splash_retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
-	splash_retry_button.add_theme_stylebox_override("hover", _make_button_style(retry_button_hover_color))
-	splash_retry_button.add_theme_stylebox_override("pressed", _make_button_style(retry_button_pressed_color))
-	splash_retry_button.add_theme_stylebox_override("focus", _make_button_focus_style(retry_button_hover_color))
-	splash_end_run_button.add_theme_stylebox_override("normal", _make_button_style(end_button_color))
-	splash_end_run_button.add_theme_stylebox_override("hover", _make_button_style(end_button_hover_color))
-	splash_end_run_button.add_theme_stylebox_override("pressed", _make_button_style(end_button_pressed_color))
-	splash_end_run_button.add_theme_stylebox_override("focus", _make_button_focus_style(end_button_hover_color))
+	_apply_button_palette(retry_button, retry_button_color, retry_button_hover_color, retry_button_pressed_color)
+	_apply_button_palette(end_run_button, end_button_color, end_button_hover_color, end_button_pressed_color)
+	_apply_button_palette(invert_button, retry_button_color, retry_button_hover_color, retry_button_pressed_color)
+	_apply_button_palette(pause_button, end_button_color, end_button_hover_color, end_button_pressed_color)
+	_apply_button_palette(splash_action_button, end_button_color, end_button_hover_color, end_button_pressed_color)
+	_apply_button_palette(splash_retry_button, retry_button_color, retry_button_hover_color, retry_button_pressed_color)
+	_apply_button_palette(splash_invert_button, retry_button_color, retry_button_hover_color, retry_button_pressed_color)
+	_apply_button_palette(splash_end_run_button, end_button_color, end_button_hover_color, end_button_pressed_color)
 
-	splash_title_label.add_theme_color_override("font_color", goal_color)
-	splash_title_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_score_label.add_theme_color_override("font_color", player_color)
-	splash_score_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_optimal_label.add_theme_color_override("font_color", start_color)
-	splash_optimal_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_retries_label.add_theme_color_override("font_color", text_color)
-	splash_retries_label.add_theme_color_override("font_outline_color", outline_color)
+	splash_title_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_title_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_score_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_score_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_optimal_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_optimal_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_retries_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_retries_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_music_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_music_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_sfx_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_sfx_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	splash_stars_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_caption_label.add_theme_color_override("font_color", warning_color.lightened(0.08))
-	splash_caption_label.add_theme_color_override("font_outline_color", outline_color)
+	_apply_slider_palette(splash_music_slider)
+	_apply_slider_palette(splash_sfx_slider)
 
 
 func _refresh_ui_layout() -> void:
@@ -1138,14 +1458,12 @@ func _refresh_ui_layout() -> void:
 
 func _apply_ui_metrics() -> void:
 	var scale: float = _get_ui_scale()
-	var header_size: int = int(round(62.0 * scale))
-	var detail_size: int = int(round(44.0 * scale))
-	var button_size: int = int(round(34.0 * scale))
-	var splash_title_size: int = int(round(76.0 * scale))
-	var splash_stat_size: int = int(round(46.0 * scale))
+	var header_size: int = int(round(52.0 * scale))
+	var detail_size: int = int(round(34.0 * scale))
+	var button_size: int = int(round(30.0 * scale))
+	var splash_title_size: int = int(round(92.0 * scale))
+	var splash_stat_size: int = int(round(36.0 * scale))
 	var splash_star_size: int = int(round(92.0 * scale))
-	var splash_caption_size: int = int(round(34.0 * scale))
-
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(score_label, header_size, 7, goal_color)
@@ -1157,7 +1475,11 @@ func _apply_ui_metrics() -> void:
 	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
 	_apply_label_style(splash_optimal_label, splash_stat_size, 6, start_color)
 	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
-	_apply_label_style(splash_caption_label, splash_caption_size, 6, warning_color.lightened(0.08))
+	_apply_label_style(splash_music_label, splash_stat_size, 6, text_color)
+	_apply_label_style(splash_sfx_label, splash_stat_size, 6, text_color)
+	splash_logo_rect.custom_minimum_size = Vector2(0.0, round(220.0 * scale))
+	splash_music_slider.custom_minimum_size = Vector2(round(420.0 * scale), round(44.0 * scale))
+	splash_sfx_slider.custom_minimum_size = Vector2(round(420.0 * scale), round(44.0 * scale))
 
 	splash_stars_label.add_theme_font_override("font", ui_font)
 	splash_stars_label.add_theme_font_size_override("font_size", splash_star_size)
@@ -1167,8 +1489,10 @@ func _apply_ui_metrics() -> void:
 	_apply_button_style_metrics(retry_button, button_size)
 	_apply_button_style_metrics(end_run_button, button_size)
 	_apply_button_style_metrics(invert_button, button_size)
+	_apply_button_style_metrics(pause_button, button_size)
 	_apply_button_style_metrics(splash_action_button, button_size)
 	_apply_button_style_metrics(splash_retry_button, button_size)
+	_apply_button_style_metrics(splash_invert_button, button_size)
 	_apply_button_style_metrics(splash_end_run_button, button_size)
 
 
@@ -1176,17 +1500,58 @@ func _apply_label_style(label: Label, font_size: int, outline_size: int, color: 
 	label.add_theme_font_override("font", ui_font)
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_constant_override("outline_size", outline_size)
-	label.add_theme_color_override("font_color", color)
-	label.add_theme_color_override("font_outline_color", outline_color)
+	label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 
 
 func _apply_button_style_metrics(button: Button, font_size: int) -> void:
 	button.custom_minimum_size = Vector2(0.0, round(112.0 * _get_ui_scale()))
 	button.add_theme_font_override("font", ui_font)
 	button.add_theme_font_size_override("font_size", font_size)
-	button.add_theme_constant_override("outline_size", 6)
-	button.add_theme_color_override("font_color", text_color)
-	button.add_theme_color_override("font_outline_color", outline_color)
+	button.add_theme_constant_override("outline_size", 7)
+	button.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	button.add_theme_color_override("font_hover_color", BRIGHT_TEXT_COLOR)
+	button.add_theme_color_override("font_pressed_color", BRIGHT_TEXT_COLOR)
+	button.add_theme_color_override("font_focus_color", BRIGHT_TEXT_COLOR)
+	button.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+
+
+func _apply_slider_palette(slider: HSlider) -> void:
+	var rail_style: StyleBoxFlat = StyleBoxFlat.new()
+	rail_style.bg_color = panel_color.darkened(0.12)
+	rail_style.set_corner_radius_all(16)
+	rail_style.content_margin_left = 14
+	rail_style.content_margin_right = 14
+	rail_style.content_margin_top = 10
+	rail_style.content_margin_bottom = 10
+	slider.add_theme_stylebox_override("slider", rail_style)
+	var active_style: StyleBoxFlat = StyleBoxFlat.new()
+	active_style.bg_color = retry_button_color.lightened(0.18)
+	active_style.set_corner_radius_all(16)
+	active_style.content_margin_left = 14
+	active_style.content_margin_right = 14
+	active_style.content_margin_top = 10
+	active_style.content_margin_bottom = 10
+	slider.add_theme_stylebox_override("grabber_area", active_style)
+	slider.add_theme_stylebox_override("grabber_area_highlight", active_style)
+	slider.add_theme_icon_override("grabber", _make_slider_grabber_icon(end_button_color))
+	slider.add_theme_icon_override("grabber_highlight", _make_slider_grabber_icon(end_button_hover_color))
+
+
+func _make_slider_grabber_icon(color: Color) -> ImageTexture:
+	var size: int = 28
+	var image: Image = Image.create(size, size, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	var center: Vector2 = Vector2(size * 0.5, size * 0.5)
+	var radius: float = size * 0.38
+	for y in range(size):
+		for x in range(size):
+			var distance: float = Vector2(float(x), float(y)).distance_to(center)
+			if distance <= radius:
+				image.set_pixel(x, y, color)
+			elif distance <= radius + 2.0:
+				image.set_pixel(x, y, color.darkened(0.35))
+	return ImageTexture.create_from_image(image)
 
 
 func _get_ui_scale() -> float:
@@ -1198,6 +1563,8 @@ func _get_top_hud_height() -> float:
 	var base_height: float = BASE_TOP_HUD_HEIGHT * _get_ui_scale()
 	if top_panel == null:
 		return base_height
+	if not top_panel.visible:
+		return 0.0
 	return minf(maxf(base_height, top_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.3)
 
 
@@ -1205,6 +1572,8 @@ func _get_bottom_hud_height() -> float:
 	var base_height: float = BASE_BOTTOM_HUD_HEIGHT * _get_ui_scale()
 	if bottom_panel == null:
 		return base_height
+	if not bottom_panel.visible:
+		return 0.0
 	return minf(maxf(base_height, bottom_panel.get_combined_minimum_size().y + _get_outer_margin() * 2.0), get_viewport_rect().size.y * 0.28)
 
 
@@ -1226,32 +1595,36 @@ func _load_ui_font() -> void:
 func _make_panel_style(bg_color: Color, border_color: Color, shadow_color: Color) -> StyleBoxFlat:
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	style.bg_color = bg_color
-	style.border_color = border_color
-	style.set_border_width_all(3)
-	style.set_corner_radius_all(20)
-	style.content_margin_left = 18
-	style.content_margin_right = 18
-	style.content_margin_top = 16
-	style.content_margin_bottom = 16
-	style.shadow_color = _with_alpha(shadow_color, 0.28)
-	style.shadow_size = 14
-	style.shadow_offset = Vector2(0.0, 6.0)
+	style.border_color = border_color.lightened(0.08)
+	style.border_blend = true
+	style.set_border_width_all(4)
+	style.set_corner_radius_all(24)
+	style.corner_detail = 10
+	style.content_margin_left = 20
+	style.content_margin_right = 20
+	style.content_margin_top = 18
+	style.content_margin_bottom = 18
+	style.shadow_color = _with_alpha(shadow_color.darkened(0.35), 0.34)
+	style.shadow_size = 16
+	style.shadow_offset = Vector2(0.0, 8.0)
 	return style
 
 
 func _make_button_style(bg_color: Color) -> StyleBoxFlat:
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	style.bg_color = bg_color
-	style.border_color = bg_color.lightened(0.3)
+	style.border_color = bg_color.lightened(0.22)
+	style.border_blend = true
 	style.set_border_width_all(4)
-	style.set_corner_radius_all(18)
-	style.content_margin_left = 18
-	style.content_margin_right = 18
+	style.set_corner_radius_all(24)
+	style.corner_detail = 10
+	style.content_margin_left = 20
+	style.content_margin_right = 20
 	style.content_margin_top = 16
-	style.content_margin_bottom = 16
-	style.shadow_color = _with_alpha(bg_color.darkened(0.58), 0.42)
-	style.shadow_size = 14
-	style.shadow_offset = Vector2(0.0, 6.0)
+	style.content_margin_bottom = 18
+	style.shadow_color = _with_alpha(bg_color.darkened(0.62), 0.46)
+	style.shadow_size = 16
+	style.shadow_offset = Vector2(0.0, 8.0)
 	return style
 
 
@@ -1259,12 +1632,20 @@ func _make_button_focus_style(border_color: Color) -> StyleBoxFlat:
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	style.border_color = border_color.lightened(0.25)
-	style.set_border_width_all(5)
-	style.set_corner_radius_all(20)
+	style.set_border_width_all(6)
+	style.set_corner_radius_all(26)
+	style.corner_detail = 10
 	style.shadow_color = _with_alpha(border_color.lightened(0.15), 0.38)
 	style.shadow_size = 14
 	style.shadow_offset = Vector2.ZERO
 	return style
+
+
+func _apply_button_palette(button: Button, normal_color: Color, hover_color: Color, pressed_color: Color) -> void:
+	button.add_theme_stylebox_override("normal", _make_button_style(normal_color))
+	button.add_theme_stylebox_override("hover", _make_button_style(hover_color))
+	button.add_theme_stylebox_override("pressed", _make_button_style(pressed_color))
+	button.add_theme_stylebox_override("focus", _make_button_focus_style(hover_color))
 
 
 func _set_splash_visible(is_visible: bool) -> void:
@@ -1279,7 +1660,7 @@ func _set_footer_enabled(is_enabled: bool) -> void:
 
 
 func _is_menu_navigation_active() -> bool:
-	return splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED or splash_mode == SplashMode.RUN_COMPLETE
+	return splash_mode != SplashMode.NONE
 
 
 func _handle_menu_navigation_input(event: InputEvent) -> bool:
@@ -1304,57 +1685,75 @@ func _handle_menu_navigation_input(event: InputEvent) -> bool:
 
 
 func _move_menu_focus(direction: Vector2i) -> void:
-	var buttons: Array[Button] = _get_active_menu_buttons()
-	if buttons.is_empty():
+	var controls: Array[Control] = _get_active_menu_controls()
+	if controls.is_empty():
 		menu_focus_index = -1
 		return
 
-	if menu_focus_index < 0 or menu_focus_index >= buttons.size():
+	if menu_focus_index >= 0 and menu_focus_index < controls.size() and direction.x != 0:
+		var focused_control: Control = controls[menu_focus_index]
+		if focused_control is HSlider:
+			_adjust_focused_slider(focused_control, direction.x)
+			return
+
+	if menu_focus_index < 0 or menu_focus_index >= controls.size():
 		menu_focus_index = 0
 	else:
-		var step: int = -1 if direction.x < 0 or direction.y < 0 else 1
-		menu_focus_index = posmod(menu_focus_index + step, buttons.size())
+		var step: int = -1 if direction.y < 0 or direction.x < 0 else 1
+		menu_focus_index = posmod(menu_focus_index + step, controls.size())
 
-	buttons[menu_focus_index].grab_focus()
+	controls[menu_focus_index].grab_focus()
 	if audio_controller != null:
 		audio_controller.play_menu_move()
 
 
 func _sync_menu_focus(force_first: bool = false) -> void:
-	var buttons: Array[Button] = _get_active_menu_buttons()
-	if buttons.is_empty():
+	var controls: Array[Control] = _get_active_menu_controls()
+	if controls.is_empty():
 		menu_focus_index = -1
 		return
 
-	if force_first or menu_focus_index < 0 or menu_focus_index >= buttons.size():
+	if force_first or menu_focus_index < 0 or menu_focus_index >= controls.size():
 		menu_focus_index = 0
 
-	buttons[menu_focus_index].grab_focus()
+	controls[menu_focus_index].grab_focus()
 
 
 func _activate_focused_menu_button() -> void:
-	var buttons: Array[Button] = _get_active_menu_buttons()
-	if buttons.is_empty():
+	var controls: Array[Control] = _get_active_menu_controls()
+	if controls.is_empty():
 		_handle_splash_action()
 		return
 
-	if menu_focus_index < 0 or menu_focus_index >= buttons.size():
+	if menu_focus_index < 0 or menu_focus_index >= controls.size():
 		menu_focus_index = 0
 
-	buttons[menu_focus_index].emit_signal("pressed")
+	var control: Control = controls[menu_focus_index]
+	if control is Button:
+		control.emit_signal("pressed")
 
 
-func _get_active_menu_buttons() -> Array[Button]:
-	var buttons: Array[Button] = []
-	for button in [splash_action_button, splash_retry_button, splash_end_run_button]:
-		if button.visible and not button.disabled:
-			buttons.append(button)
-	return buttons
+func _get_active_menu_controls() -> Array[Control]:
+	var controls: Array[Control] = []
+	for control in [splash_action_button, splash_retry_button, splash_music_slider, splash_sfx_slider, splash_invert_button, splash_end_run_button]:
+		if control == null or not control.visible:
+			continue
+		if control is Button and control.disabled:
+			continue
+		controls.append(control)
+	return controls
 
 
-func _set_menu_focus_from_button(button: Button) -> void:
-	var buttons: Array[Button] = _get_active_menu_buttons()
-	menu_focus_index = buttons.find(button)
+func _set_menu_focus_from_control(control: Control) -> void:
+	var controls: Array[Control] = _get_active_menu_controls()
+	menu_focus_index = controls.find(control)
+
+
+func _adjust_focused_slider(slider: HSlider, horizontal_direction: int) -> void:
+	var delta: float = slider.step if slider.step > 0.0 else 0.05
+	slider.value = clampf(slider.value + float(horizontal_direction) * delta, slider.min_value, slider.max_value)
+	if audio_controller != null:
+		audio_controller.play_menu_move()
 
 
 func _draw_background_glow(viewport_rect: Rect2) -> void:
@@ -1381,89 +1780,240 @@ func _draw_playfield_trim(draw_area: Rect2) -> void:
 
 func _draw_grid_cells(origin: Vector2, cell_size: float) -> void:
 	var line_width: float = clampf(cell_size * 0.04, 2.0, 5.0)
-	var number_font_size: int = clampi(int(round(cell_size * 0.34)), 16, 46)
-	var goal_font_size: int = clampi(int(round(cell_size * 0.28)), 16, 40)
+	var number_font_size: int = clampi(int(round(cell_size * 0.46)), 20, 60)
+	var goal_font_size: int = clampi(int(round(cell_size * 0.38)), 18, 52)
 
 	for y in range(grid_height):
 		for x in range(grid_width):
 			var cell: Vector2i = Vector2i(x, y)
-			var rect: Rect2 = Rect2(origin + Vector2(x, y) * cell_size, Vector2.ONE * cell_size)
+			var base_rect: Rect2 = Rect2(origin + Vector2(x, y) * cell_size, Vector2.ONE * cell_size)
+			var rect: Rect2 = _get_tile_draw_rect(base_rect, cell, cell_size)
 			var fill_color: Color = _get_cell_fill_color(cell)
-			draw_rect(rect, fill_color, true)
-			draw_rect(rect, _with_alpha(grid_line_color, 0.75), false, line_width)
+			_draw_tile_surface(rect, fill_color, line_width, _is_cell_available(cell))
 
 			if cell == goal_cell:
-				draw_rect(rect.grow(-line_width * 0.7), _with_alpha(goal_color, 0.16), false, maxf(2.0, line_width * 0.9))
-				_draw_centered_text(rect, str(goal_target), goal_font_size, goal_color)
+				_draw_centered_text(rect, str(goal_target), goal_font_size, BRIGHT_TEXT_COLOR, 4)
 			else:
-				_draw_centered_text(rect, str(_get_cell_value(cell)), number_font_size, cell_number_color)
-
-			if cell == start_cell:
-				draw_rect(rect.grow(-line_width * 1.3), _with_alpha(start_color, 0.9), false, maxf(2.0, line_width * 1.1))
+				_draw_centered_text(rect, str(_get_cell_value(cell)), number_font_size, BRIGHT_TEXT_COLOR, 4)
 
 
 func _draw_goal_overlay(cell_size: float) -> void:
-	var center: Vector2 = _cell_to_screen(goal_cell)
-	var radius: float = cell_size * 0.42 * _get_goal_clear_scale()
+	var fail_shake: Vector2 = _get_goal_fail_shake(cell_size)
+	var center: Vector2 = _cell_to_screen(goal_cell) + fail_shake
+	var radius: float = cell_size * 0.42 * _get_goal_clear_scale() * _get_goal_fail_scale()
 	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.6)
-	var intro_scale: float = _get_marker_intro_scale(radius)
-	draw_arc(center, radius * (1.16 + pulse * 0.1) * intro_scale, 0.0, TAU, 40, _with_alpha(goal_color.lightened(0.16), 0.94), maxf(cell_size * 0.04, 2.0))
-	draw_arc(center, radius * 0.82 * intro_scale, 0.0, TAU, 32, _with_alpha(goal_color, 0.42), maxf(cell_size * 0.03, 2.0))
+	var arc_color: Color = warning_color if _is_goal_fail_active() else goal_color
+	var outer_alpha: float = 0.94 if not _is_goal_fail_active() else 0.98
+	var inner_alpha: float = 0.42 if not _is_goal_fail_active() else 0.58
+	draw_arc(center, radius * (1.16 + pulse * 0.1), 0.0, TAU, 40, _with_alpha(arc_color.lightened(0.16), outer_alpha), maxf(cell_size * 0.04, 2.0))
+	draw_arc(center, radius * 0.82, 0.0, TAU, 32, _with_alpha(arc_color, inner_alpha), maxf(cell_size * 0.03, 2.0))
+	if _is_goal_fail_active():
+		draw_arc(center, radius * 1.34, PI * 0.08, PI * 0.92, 22, _with_alpha(warning_color.lightened(0.08), 0.84), maxf(cell_size * 0.035, 2.0))
 
 
 func _draw_start_overlay(cell_size: float) -> void:
-	var center: Vector2 = _cell_to_screen(start_cell)
-	var radius: float = cell_size * 0.16
-	var diamond: PackedVector2Array = PackedVector2Array([
-		center + Vector2(0.0, -radius),
-		center + Vector2(radius, 0.0),
-		center + Vector2(0.0, radius),
-		center + Vector2(-radius, 0.0),
-	])
-	draw_colored_polygon(diamond, start_color)
+	return
 
 
 func _draw_player_overlay(cell_size: float) -> void:
 	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 3.0)
-	var player_radius: float = clampf(cell_size * 0.19, 8.0, 18.0)
+	var player_radius: float = clampf(cell_size * 0.24, 10.0, 24.0)
 	var player_intro_scale: float = _get_marker_intro_scale(player_radius)
 	var player_clear_scale: float = _get_player_clear_scale()
-	_draw_player_marker(_get_player_draw_position(), player_radius * player_intro_scale * player_clear_scale, pulse)
+	var player_fail_scale: float = _get_player_fail_scale()
+	var player_move_scale: float = _get_player_move_scale()
+	var player_total_scale: float = _get_player_total_bounce_scale()
+	var fail_shake: Vector2 = _get_goal_fail_shake(cell_size)
+	_draw_player_marker(_get_player_draw_position() + fail_shake, player_radius * player_intro_scale * player_clear_scale * player_fail_scale * player_move_scale * player_total_scale, pulse, cell_size)
 
 
-func _draw_player_marker(center: Vector2, radius: float, pulse: float) -> void:
-	draw_circle(center, radius * (1.08 + pulse * 0.04), _with_alpha(player_color.lightened(0.2), 0.18))
-	draw_circle(center, radius, player_core_color)
-	draw_circle(center, radius * 0.92, player_color)
-	var eye_offset_x: float = radius * 0.34
-	var eye_offset_y: float = radius * 0.18
-	var eye_radius: float = maxf(radius * 0.08, 1.8)
-	draw_circle(center + Vector2(-eye_offset_x, -eye_offset_y), eye_radius, outline_color)
-	draw_circle(center + Vector2(eye_offset_x, -eye_offset_y), eye_radius, outline_color)
-	draw_arc(center + Vector2(0.0, radius * 0.04), radius * 0.42, PI * 0.18, PI * 0.82, 20, outline_color, maxf(radius * 0.11, 2.0))
+func _draw_player_marker(center: Vector2, radius: float, pulse: float, cell_size: float) -> void:
+	var ring_color: Color = warning_color if _is_goal_fail_active() else player_color.lightened(0.2)
+	var outer_fill: Color = warning_color.lightened(0.24) if _is_goal_fail_active() else player_core_color
+	var core_fill: Color = warning_color if _is_goal_fail_active() else player_color
+	draw_circle(center, radius * (1.08 + pulse * 0.04), _with_alpha(ring_color, 0.18))
+	draw_circle(center, radius, outer_fill)
+	draw_circle(center, radius * 0.92, core_fill)
+	var text_rect: Rect2 = Rect2(center - Vector2.ONE * radius * 0.92, Vector2.ONE * radius * 1.84)
+	var total_text: String = str(player_total)
+	var text_scale_factor: float = 0.46 if total_text.length() <= 2 else (0.38 if total_text.length() == 3 else 0.31)
+	var text_size: int = clampi(int(round(cell_size * text_scale_factor)), 18, 52)
+	_draw_centered_text(text_rect, total_text, text_size, BRIGHT_TEXT_COLOR, 4)
 
 
-func _draw_centered_text(rect: Rect2, text: String, font_size: int, color: Color) -> void:
+func _draw_centered_text(rect: Rect2, text: String, font_size: int, color: Color, outline_thickness: int = 2) -> void:
 	if ui_font == null:
 		return
 	var text_size: Vector2 = ui_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var outline: Color = _get_text_outline_color(color)
 	var baseline: Vector2 = Vector2(
 		rect.position.x + (rect.size.x - text_size.x) * 0.5,
 		rect.position.y + rect.size.y * 0.5 + ui_font.get_ascent(font_size) * 0.38
 	)
-	for offset in [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]:
-		draw_string(ui_font, baseline + offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _with_alpha(outline_color, 0.9))
+	for offset_y in range(-outline_thickness, outline_thickness + 1):
+		for offset_x in range(-outline_thickness, outline_thickness + 1):
+			if offset_x == 0 and offset_y == 0:
+				continue
+			if absf(float(offset_x)) + absf(float(offset_y)) > float(outline_thickness) * 1.6:
+				continue
+			draw_string(ui_font, baseline + Vector2(offset_x, offset_y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _with_alpha(outline, 0.95))
 	draw_string(ui_font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
 
 
 func _get_cell_fill_color(cell: Vector2i) -> Color:
 	if cell == goal_cell:
 		return playfield_color.lerp(goal_color, 0.18)
-	if cell == start_cell:
-		return playfield_color.lerp(start_color, 0.16)
 
-	var value_ratio: float = clampf(float(_get_cell_value(cell) - 1) / maxf(float(max_cell_value - 1), 1.0), 0.0, 1.0)
-	return playfield_color.lerp(playfield_trim_color, 0.08 + value_ratio * 0.32)
+	var value: int = _get_cell_value(cell)
+	if tile_value_colors.has(value):
+		return tile_value_colors[value]
+	var value_ratio: float = clampf(float(value - 1) / maxf(float(max_cell_value - 1), 1.0), 0.0, 1.0)
+	return playfield_color.lerp(playfield_trim_color, 0.12 + value_ratio * 0.28)
+
+
+func _get_tile_draw_rect(base_rect: Rect2, cell: Vector2i, cell_size: float) -> Rect2:
+	var center: Vector2 = base_rect.get_center()
+	var scale_x: float = 0.9
+	var scale_y: float = 0.9
+	var offset_y: float = 0.0
+
+	if _is_cell_available(cell):
+		var available_pulse: float = 0.5 + 0.5 * sin(pulse_time * 4.4 + float(cell.x + cell.y))
+		scale_x += 0.05 + available_pulse * 0.05
+		scale_y += 0.05 + available_pulse * 0.05
+		offset_y -= available_pulse * cell_size * 0.02
+
+	if _is_landing_bounce_active() and cell == landing_bounce_cell:
+		var progress: float = clampf(landing_bounce_elapsed / LANDING_BOUNCE_DURATION, 0.0, 1.0)
+		var wave: float = sin(progress * PI)
+		scale_x += wave * 0.08
+		scale_y += wave * 0.12
+		offset_y -= wave * cell_size * 0.14
+
+	var size: Vector2 = base_rect.size * Vector2(scale_x, scale_y)
+	return Rect2(center - size * 0.5 + Vector2(0.0, offset_y), size)
+
+
+func _draw_tile_surface(rect: Rect2, fill_color: Color, line_width: float, is_available: bool) -> void:
+	var corner_radius: float = rect.size.x * 0.18
+	var shadow_offset: Vector2 = Vector2(0.0, rect.size.y * 0.09)
+	var display_color: Color = fill_color
+	if is_available:
+		var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
+		var inverted: Color = Color(1.0 - fill_color.r, 1.0 - fill_color.g, 1.0 - fill_color.b, fill_color.a)
+		display_color = fill_color.lerp(inverted, 0.38 + pulse * 0.62)
+	_draw_rounded_rect(Rect2(rect.position + shadow_offset, rect.size), _with_alpha(background_color, 0.36), corner_radius)
+	_draw_rounded_rect(rect, display_color.lightened(0.18), corner_radius)
+	var middle_rect: Rect2 = rect.grow(-line_width * 0.45)
+	var middle_radius: float = maxf(corner_radius - line_width * 0.85, 3.0)
+	_draw_rounded_rect(middle_rect, display_color.darkened(0.3), middle_radius)
+	var face_rect: Rect2 = middle_rect.grow(-line_width * 0.62)
+	var face_radius: float = maxf(middle_radius - line_width * 0.9, 2.0)
+	_draw_rounded_rect(face_rect, display_color.lightened(0.12), face_radius)
+	_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.16), face_radius)
+	_draw_rounded_rect_outline(face_rect, _with_alpha(Color.WHITE, 0.2), face_radius, maxf(1.0, line_width * 0.5))
+	_draw_rounded_rect_outline(middle_rect, _with_alpha(display_color.darkened(0.45), 0.36), middle_radius, maxf(1.0, line_width * 0.45))
+	_draw_rounded_rect_outline(rect, _with_alpha(grid_line_color, 0.55), corner_radius, maxf(1.0, line_width * 0.8))
+	if is_available:
+		var pulse_outline: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
+		_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.18 + pulse_outline * 0.08), face_radius)
+		_draw_rounded_rect_outline(rect, _with_alpha(player_core_color, 0.3 + pulse_outline * 0.35), corner_radius, maxf(2.0, line_width * 1.1))
+
+
+func _draw_rounded_rect(rect: Rect2, color: Color, radius: float) -> void:
+	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
+	if r <= 1.0:
+		draw_rect(rect, color, true)
+		return
+	draw_rect(Rect2(rect.position + Vector2(r, 0.0), Vector2(rect.size.x - r * 2.0, rect.size.y)), color, true)
+	draw_rect(Rect2(rect.position + Vector2(0.0, r), Vector2(rect.size.x, rect.size.y - r * 2.0)), color, true)
+	draw_circle(rect.position + Vector2(r, r), r, color)
+	draw_circle(rect.position + Vector2(rect.size.x - r, r), r, color)
+	draw_circle(rect.position + Vector2(r, rect.size.y - r), r, color)
+	draw_circle(rect.position + Vector2(rect.size.x - r, rect.size.y - r), r, color)
+
+
+func _draw_rounded_rect_outline(rect: Rect2, color: Color, radius: float, width: float) -> void:
+	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
+	if r <= 1.0:
+		draw_rect(rect, color, false, width)
+		return
+	var top_left: Vector2 = rect.position + Vector2(r, r)
+	var top_right: Vector2 = rect.position + Vector2(rect.size.x - r, r)
+	var bottom_left: Vector2 = rect.position + Vector2(r, rect.size.y - r)
+	var bottom_right: Vector2 = rect.position + Vector2(rect.size.x - r, rect.size.y - r)
+	draw_arc(top_left, r, PI, PI * 1.5, 10, color, width)
+	draw_arc(top_right, r, PI * 1.5, TAU, 10, color, width)
+	draw_arc(bottom_right, r, 0.0, PI * 0.5, 10, color, width)
+	draw_arc(bottom_left, r, PI * 0.5, PI, 10, color, width)
+	draw_line(rect.position + Vector2(r, 0.0), rect.position + Vector2(rect.size.x - r, 0.0), color, width)
+	draw_line(rect.position + Vector2(rect.size.x, r), rect.position + Vector2(rect.size.x, rect.size.y - r), color, width)
+	draw_line(rect.position + Vector2(r, rect.size.y), rect.position + Vector2(rect.size.x - r, rect.size.y), color, width)
+	draw_line(rect.position + Vector2(0.0, r), rect.position + Vector2(0.0, rect.size.y - r), color, width)
+
+
+func _draw_corner_lights(rect: Rect2, color: Color, radius: float) -> void:
+	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
+	if r <= 1.0:
+		return
+	draw_circle(rect.position + Vector2(r, r), r, color)
+	draw_circle(rect.position + Vector2(rect.size.x - r, r), r, color)
+	draw_circle(rect.position + Vector2(r, rect.size.y - r), r, color)
+	draw_circle(rect.position + Vector2(rect.size.x - r, rect.size.y - r), r, color)
+
+
+func _is_cell_available(cell: Vector2i) -> bool:
+	if splash_mode != SplashMode.NONE or completed:
+		return false
+	if cell == player_cell:
+		return false
+	return _orthogonal_neighbors(player_cell).has(cell)
+
+
+func _get_cell_text_color(fill_color: Color) -> Color:
+	var luminance: float = fill_color.r * 0.299 + fill_color.g * 0.587 + fill_color.b * 0.114
+	if luminance >= 0.54:
+		return DARK_TEXT_COLOR
+	return BRIGHT_TEXT_COLOR
+
+
+func _get_text_outline_color(text_fill_color: Color) -> Color:
+	if text_fill_color == DARK_TEXT_COLOR:
+		return BRIGHT_TEXT_COLOR
+	return outline_color
+
+
+func _rebuild_tile_value_colors() -> void:
+	tile_value_colors.clear()
+	if cell_values.is_empty():
+		return
+
+	var unique_values: Array[int] = []
+	for row in cell_values:
+		for value in row:
+			var typed_value: int = int(value)
+			if typed_value <= 0:
+				continue
+			if unique_values.has(typed_value):
+				continue
+			unique_values.append(typed_value)
+
+	unique_values.sort()
+	if unique_values.is_empty():
+		return
+
+	var hue_span: float = 0.88
+	var hue_start: float = 0.02
+	var saturation: float = 0.34 if invert_colors_enabled else 0.56
+	var brightness: float = 0.92 if invert_colors_enabled else 0.84
+	var mix_amount: float = 0.72 if invert_colors_enabled else 0.62
+
+	for index in range(unique_values.size()):
+		var ratio: float = 0.0 if unique_values.size() == 1 else float(index) / float(unique_values.size() - 1)
+		var hue: float = fposmod(hue_start + ratio * hue_span, 1.0)
+		var hue_color: Color = Color.from_hsv(hue, saturation, brightness)
+		var shaded_color: Color = playfield_color.lerp(hue_color, mix_amount)
+		tile_value_colors[unique_values[index]] = shaded_color
 
 
 func _orthogonal_neighbors(cell: Vector2i) -> Array[Vector2i]:
@@ -1480,45 +2030,3 @@ func _get_cell_value(cell: Vector2i) -> int:
 
 func _with_alpha(color: Color, alpha: float) -> Color:
 	return Color(color.r, color.g, color.b, alpha)
-
-
-func _current_elapsed_seconds() -> int:
-	return int(ceili(level_elapsed_time))
-
-
-func _current_time_left_seconds() -> int:
-	return maxi(int(ceili(float(par_time_seconds) - level_elapsed_time)), 0)
-
-
-func _calculate_par_time_seconds() -> int:
-	var skill_pressure: float = _get_skill_pressure(level)
-	var base_time: float = float(optimal_steps) * lerpf(1.05, 0.9, skill_pressure)
-	var layout_time: float = sqrt(float(grid_width * grid_height)) * lerpf(0.72, 0.56, skill_pressure)
-	var target_time: float = float(goal_target) * lerpf(0.18, 0.14, skill_pressure)
-	return maxi(8, int(ceili(base_time + layout_time + target_time + 1.0)))
-
-
-func _fail_level_timeout() -> void:
-	if splash_mode != SplashMode.NONE or completed:
-		return
-
-	move_animation_elapsed = MOVE_ANIMATION_DURATION
-	goal_clear_elapsed = GOAL_CLEAR_DURATION
-	pending_goal_completion = false
-	_record_level_result(false)
-	if audio_controller != null:
-		audio_controller.play_timeout()
-	_show_failure_splash("TIME UP", "Reach the goal with the exact total before the timer runs out.")
-
-
-func _fail_level_target_exceeded() -> void:
-	if splash_mode != SplashMode.NONE or completed:
-		return
-
-	move_animation_elapsed = MOVE_ANIMATION_DURATION
-	goal_clear_elapsed = GOAL_CLEAR_DURATION
-	pending_goal_completion = false
-	_record_level_result(false)
-	if audio_controller != null:
-		audio_controller.play_timeout()
-	_show_failure_splash("TARGET EXCEEDED", "Every move adds more, so totals above the goal cannot recover.")

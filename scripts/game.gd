@@ -2,18 +2,18 @@ extends Node2D
 
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
 const ProceduralAudioScript = preload("res://scripts/procedural_audio.gd")
+
 const BRIGHT_TEXT_COLOR := Color("f7fbff")
 const DARK_TEXT_COLOR := Color("102030")
 const DARK_OUTLINE_COLOR := Color("09111d")
 const LIGHT_OUTLINE_COLOR := Color("eef4ff")
-const MARKER_INTRO_DURATION := 3.0
-const MARKER_INTRO_START_SCALE := 4.0
+const MARKER_INTRO_DURATION := 2.2
+const MARKER_INTRO_START_SCALE := 3.4
 const MOVE_ANIMATION_DURATION := 0.14
 const GOAL_CLEAR_DURATION := 0.32
-const BONUS_PICKUP_DURATION := 0.26
 const JOYPAD_DEADZONE := 0.38
 const JOYPAD_TRIGGER := 0.72
-const BASE_LEVEL_AREA := 24.0
+const BASE_LEVEL_AREA := 16.0
 const BASE_TOP_HUD_HEIGHT := 180.0
 const BASE_BOTTOM_HUD_HEIGHT := 150.0
 const BASE_OUTER_MARGIN := 12.0
@@ -31,18 +31,20 @@ enum SplashMode {
 
 var run_seed: int = 0
 var level: int = 1
-var maze_width: int = 0
-var maze_height: int = 0
+var grid_width: int = 0
+var grid_height: int = 0
 var level_seed: int = 0
-var cells: Array[PackedInt32Array] = []
+var cell_values: Array[PackedInt32Array] = []
+var start_cell: Vector2i = Vector2i.ZERO
 var goal_cell: Vector2i = Vector2i.ZERO
 var player_cell: Vector2i = Vector2i.ZERO
 var solution_path: Array[Vector2i] = []
 var optimal_steps: int = 0
-var perfect_score: int = 0
+var goal_target: int = 0
+var max_cell_value: int = 9
+var player_total: int = 0
 var player_steps: int = 0
 var level_retries: int = 0
-var collected_bonus_total: int = 0
 var level_elapsed_time: float = 0.0
 var par_time_seconds: int = 0
 var completed: bool = false
@@ -50,9 +52,6 @@ var pulse_time: float = 0.0
 var marker_intro_elapsed: float = MARKER_INTRO_DURATION
 var move_animation_elapsed: float = MOVE_ANIMATION_DURATION
 var goal_clear_elapsed: float = GOAL_CLEAR_DURATION
-var bonus_pickup_elapsed: float = BONUS_PICKUP_DURATION
-var bonus_pickup_cell: Vector2i = Vector2i(-1, -1)
-var bonus_pickup_value: int = 0
 var move_animation_from: Vector2 = Vector2.ZERO
 var move_animation_to: Vector2 = Vector2.ZERO
 var pending_goal_completion: bool = false
@@ -66,9 +65,8 @@ var invert_colors_enabled: bool = false
 var menu_focus_index: int = -1
 var player_skill_rating: float = 0.0
 var current_level_difficulty_scale: float = 1.0
-
-var level_bonus_values: Dictionary = {}
-var collected_bonus_cells: Dictionary = {}
+var last_failure_title: String = "TIME UP"
+var last_failure_caption: String = ""
 
 var text_color: Color = BRIGHT_TEXT_COLOR
 var outline_color: Color = DARK_OUTLINE_COLOR
@@ -77,13 +75,13 @@ var background_glow_color: Color = Color("3b4dff")
 var secondary_glow_color: Color = Color("ff5ec7")
 var playfield_color: Color = Color("162233")
 var playfield_trim_color: Color = Color("466283")
-var wall_color: Color = Color("4d6685")
-var node_color: Color = Color("d8e4f4")
+var grid_line_color: Color = Color("4d6685")
+var start_color: Color = Color("5fd08c")
 var goal_color: Color = Color("ffcc66")
-var bonus_gain_color: Color = Color("ff6f61")
-var bonus_loss_color: Color = Color("5fd08c")
+var warning_color: Color = Color("ff6f61")
 var player_color: Color = Color("73d2ff")
 var player_core_color: Color = Color("f7fbff")
+var cell_number_color: Color = Color("d8e4f4")
 var panel_color: Color = Color("203147")
 var panel_border_color: Color = Color("314864")
 var retry_button_color: Color = Color("466283")
@@ -135,6 +133,7 @@ func _process(delta: float) -> void:
 	if viewport_size != last_viewport_size:
 		last_viewport_size = viewport_size
 		_refresh_ui_layout()
+
 	if splash_mode == SplashMode.NONE and not completed:
 		if _is_marker_intro_active():
 			marker_intro_elapsed = minf(marker_intro_elapsed + delta, MARKER_INTRO_DURATION)
@@ -142,10 +141,12 @@ func _process(delta: float) -> void:
 			level_elapsed_time += delta
 			if not pending_goal_completion and not _is_goal_clear_active() and level_elapsed_time >= float(par_time_seconds):
 				_fail_level_timeout()
+
 		if splash_mode != SplashMode.NONE or completed:
 			_update_ui()
 			queue_redraw()
 			return
+
 		if _is_move_animation_active():
 			move_animation_elapsed = minf(move_animation_elapsed + delta, MOVE_ANIMATION_DURATION)
 			if not _is_move_animation_active() and pending_goal_completion:
@@ -155,9 +156,9 @@ func _process(delta: float) -> void:
 			goal_clear_elapsed = minf(goal_clear_elapsed + delta, GOAL_CLEAR_DURATION)
 			if not _is_goal_clear_active():
 				_finish_level_complete()
+
 		_update_ui()
-	if _is_bonus_pickup_active():
-		bonus_pickup_elapsed = minf(bonus_pickup_elapsed + delta, BONUS_PICKUP_DURATION)
+
 	queue_redraw()
 
 
@@ -196,7 +197,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _is_marker_intro_active() and not skip_movement_intro:
 			return
-		
+
 	if _is_marker_intro_active() or _is_goal_clear_active():
 		return
 
@@ -211,13 +212,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		var touch_event: InputEventScreenTouch = event
 		if touch_event.pressed:
-			_handle_maze_tap(touch_event.position)
+			_handle_grid_tap(touch_event.position)
 		return
 
 	if event is InputEventMouseButton:
 		var mouse_event: InputEventMouseButton = event
 		if mouse_event.pressed and mouse_event.button_index == MOUSE_BUTTON_LEFT:
-			_handle_maze_tap(mouse_event.position)
+			_handle_grid_tap(mouse_event.position)
 		return
 
 	if event is InputEventKey:
@@ -246,7 +247,7 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, viewport_rect.size), background_color, true)
 	_draw_background_glow(viewport_rect)
 
-	if maze_width <= 0 or maze_height <= 0:
+	if grid_width <= 0 or grid_height <= 0:
 		return
 
 	var draw_area: Rect2 = _get_draw_area()
@@ -255,54 +256,10 @@ func _draw() -> void:
 
 	var cell_size: float = _get_cell_size()
 	var origin: Vector2 = _get_grid_origin(cell_size)
-	var wall_width: float = clampf(cell_size * 0.1, 3.0, 10.0)
-	var node_radius: float = clampf(cell_size * 0.08, 3.0, 7.0)
-	var player_radius: float = clampf(cell_size * 0.19, 8.0, 17.0)
-	var goal_radius: float = clampf(cell_size * 0.21, 9.0, 18.0)
-	var bonus_radius: float = clampf(cell_size * 0.18, 9.0, 18.0)
-	var goal_intro_scale: float = _get_marker_intro_scale(goal_radius)
-	var player_intro_scale: float = _get_marker_intro_scale(player_radius)
-	var goal_clear_scale: float = _get_goal_clear_scale()
-	var player_clear_scale: float = _get_player_clear_scale()
-	var pulse: float = 0.84 + 0.16 * sin(pulse_time * 4.0)
-
-	for y in range(maze_height):
-		for x in range(maze_width):
-			var cell: Vector2i = Vector2i(x, y)
-			var cell_origin: Vector2 = origin + Vector2(x, y) * cell_size
-			var top_left: Vector2 = cell_origin
-			var top_right: Vector2 = cell_origin + Vector2(cell_size, 0.0)
-			var bottom_left: Vector2 = cell_origin + Vector2(0.0, cell_size)
-			var bottom_right: Vector2 = cell_origin + Vector2(cell_size, cell_size)
-
-			if y == 0:
-				draw_line(top_left, top_right, wall_color, wall_width)
-			if x == 0:
-				draw_line(top_left, bottom_left, wall_color, wall_width)
-			if not MazeGeneratorScript.has_connection(cells, cell, Vector2i.RIGHT):
-				draw_line(top_right, bottom_right, wall_color, wall_width)
-			if not MazeGeneratorScript.has_connection(cells, cell, Vector2i.DOWN):
-				draw_line(bottom_left, bottom_right, wall_color, wall_width)
-
-	for node_y in range(maze_height):
-		for node_x in range(maze_width):
-			var node_center: Vector2 = _cell_to_screen(Vector2i(node_x, node_y))
-			draw_circle(node_center, node_radius + 1.6, _with_alpha(playfield_trim_color, 0.34))
-			draw_circle(node_center, node_radius, node_color)
-
-	for bonus_cell_variant in level_bonus_values.keys():
-		var bonus_cell: Vector2i = bonus_cell_variant
-		if collected_bonus_cells.has(bonus_cell):
-			continue
-		if bonus_cell == goal_cell:
-			continue
-		_draw_bonus_marker(_cell_to_screen(bonus_cell), bonus_radius, pulse, int(level_bonus_values[bonus_cell]))
-
-	if _is_bonus_pickup_active():
-		_draw_bonus_pickup_effect(_cell_to_screen(bonus_pickup_cell), bonus_radius, bonus_pickup_value)
-
-	_draw_goal_marker(_cell_to_screen(goal_cell), goal_radius * goal_intro_scale * goal_clear_scale, pulse)
-	_draw_player_marker(_get_player_draw_position(), player_radius * player_intro_scale * player_clear_scale, pulse)
+	_draw_grid_cells(origin, cell_size)
+	_draw_goal_overlay(cell_size)
+	_draw_start_overlay(cell_size)
+	_draw_player_overlay(cell_size)
 
 
 func _start_new_run() -> void:
@@ -340,48 +297,42 @@ func _generate_level(reuse_current_profile: bool = false) -> void:
 	marker_intro_elapsed = 0.0
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
-	bonus_pickup_elapsed = BONUS_PICKUP_DURATION
-	bonus_pickup_cell = Vector2i(-1, -1)
-	bonus_pickup_value = 0
 	pending_goal_completion = false
+	last_failure_title = "TIME UP"
+	last_failure_caption = ""
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
 
 	if not reuse_current_profile:
 		var dimensions: Vector2i = _get_level_dimensions(level)
 		current_level_difficulty_scale = _get_level_difficulty_scale(level)
-		maze_width = dimensions.x
-		maze_height = dimensions.y
-		level_seed = abs(hash([run_seed, level, maze_width, maze_height]))
+		grid_width = dimensions.x
+		grid_height = dimensions.y
+		level_seed = abs(hash([run_seed, level, grid_width, grid_height]))
 		if level_seed == 0:
 			level_seed = 1
 
 	_apply_palette(level)
 
-	var maze: Dictionary = MazeGeneratorScript.generate(maze_width, maze_height, level_seed, current_level_difficulty_scale)
-	cells = maze["cells"]
-	goal_cell = maze["goal"]
-	player_cell = maze["start"]
+	var puzzle: Dictionary = MazeGeneratorScript.generate(grid_width, grid_height, level_seed, current_level_difficulty_scale)
+	cell_values = puzzle["cell_values"]
+	start_cell = puzzle["start"]
+	goal_cell = puzzle["goal"]
+	player_cell = start_cell
 	move_animation_from = Vector2(player_cell)
 	move_animation_to = Vector2(player_cell)
-	solution_path = maze["solution_path"]
-	optimal_steps = maze["solution_length"]
-	perfect_score = maze["perfect_score"]
+	solution_path = puzzle["solution_path"]
+	optimal_steps = puzzle["solution_length"]
+	goal_target = puzzle["target_total"]
+	max_cell_value = int(puzzle.get("max_cell_value", 9))
+	player_total = 0
 	player_steps = 0
-	collected_bonus_total = 0
 	level_elapsed_time = 0.0
-	level_bonus_values = {}
-	collected_bonus_cells = {}
-
-	for bonus_variant in maze["bonuses"]:
-		var bonus: Dictionary = bonus_variant
-		var bonus_cell: Vector2i = bonus["cell"]
-		level_bonus_values[bonus_cell] = int(bonus["value"])
-
 	par_time_seconds = _calculate_par_time_seconds()
-	_collect_bonus_at(player_cell)
+
 	if audio_controller != null:
 		audio_controller.update_level_music(level, level_seed)
+
 	_update_ui()
 	queue_redraw()
 
@@ -396,59 +347,58 @@ func _get_level_dimensions(current_level: int) -> Vector2i:
 	while width * height < target_area:
 		height += 1
 
+	if width * height > 54:
+		height = maxi(4, int(floor(54.0 / float(width))))
+
 	return Vector2i(width, height)
 
 
 func _get_target_level_area(current_level: int) -> int:
 	var level_span: int = maxi(current_level - 1, 0)
-	var early_levels: int = mini(level_span, 4)
-	var late_levels: int = maxi(level_span - 4, 0)
-	var base_area: float = BASE_LEVEL_AREA + float(early_levels) * 8.5 + float(late_levels) * 4.0
-	var skill_bonus: float = _get_skill_pressure(current_level) * (6.0 if current_level <= 4 else 4.0)
-	return maxi(int(ceili(base_area + skill_bonus)), int(BASE_LEVEL_AREA))
+	var early_levels: int = mini(level_span, 5)
+	var late_levels: int = maxi(level_span - 5, 0)
+	var base_area: float = BASE_LEVEL_AREA + float(early_levels) * 4.0 + float(late_levels) * 2.5
+	var skill_bonus: float = _get_skill_pressure(current_level) * 4.0
+	return clampi(int(ceili(base_area + skill_bonus)), int(BASE_LEVEL_AREA), 54)
 
 
 func _get_level_difficulty_scale(current_level: int) -> float:
 	var level_span: int = maxi(current_level - 1, 0)
-	var early_levels: int = mini(level_span, 4)
-	var late_levels: int = maxi(level_span - 4, 0)
-	return 1.0 + float(early_levels) * 0.18 + float(late_levels) * 0.09 + _get_skill_pressure(current_level) * 0.28
+	var early_levels: int = mini(level_span, 5)
+	var late_levels: int = maxi(level_span - 5, 0)
+	return 1.0 + float(early_levels) * 0.16 + float(late_levels) * 0.08 + _get_skill_pressure(current_level) * 0.24
 
 
 func _get_skill_pressure(current_level: int) -> float:
-	var taper: float = lerpf(1.4, 0.75, clampf(float(current_level - 1) / 8.0, 0.0, 1.0))
+	var taper: float = lerpf(1.35, 0.72, clampf(float(current_level - 1) / 8.0, 0.0, 1.0))
 	return clampf(player_skill_rating * taper, 0.0, 1.0)
 
 
-func _handle_maze_tap(screen_position: Vector2) -> void:
+func _handle_grid_tap(screen_position: Vector2) -> void:
 	var tapped_cell: Vector2i = _find_tapped_neighbor(screen_position)
 	if tapped_cell.x < 0:
 		return
-
 	_move_player_to(tapped_cell)
 
 
 func _find_tapped_neighbor(screen_position: Vector2) -> Vector2i:
 	var best_cell: Vector2i = Vector2i(-1, -1)
 	var best_distance: float = INF
-
-	for neighbor in MazeGeneratorScript.connected_neighbors(cells, maze_width, maze_height, player_cell):
+	for neighbor in _orthogonal_neighbors(player_cell):
 		var distance: float = screen_position.distance_to(_cell_to_screen(neighbor))
 		if distance > _get_tap_radius():
 			continue
 		if distance < best_distance:
 			best_distance = distance
 			best_cell = neighbor
-
 	return best_cell
 
 
 func _try_move_in_direction(direction: Vector2i) -> void:
 	var target_cell: Vector2i = player_cell + direction
-	for neighbor in MazeGeneratorScript.connected_neighbors(cells, maze_width, maze_height, player_cell):
-		if neighbor == target_cell:
-			_move_player_to(target_cell)
-			return
+	if not _is_inside(target_cell):
+		return
+	_move_player_to(target_cell)
 
 
 func _move_player_to(target_cell: Vector2i) -> void:
@@ -458,32 +408,21 @@ func _move_player_to(target_cell: Vector2i) -> void:
 	move_animation_to = Vector2(target_cell)
 	move_animation_elapsed = 0.0
 	player_steps += 1
+
+	if player_cell != goal_cell:
+		player_total += _get_cell_value(player_cell)
+
 	if audio_controller != null:
 		audio_controller.play_move()
-	_collect_bonus_at(player_cell)
 
-	if player_cell == goal_cell:
+	if player_total > goal_target:
+		_fail_level_target_exceeded()
+	elif player_cell == goal_cell and player_total == goal_target:
 		_complete_level()
 	else:
 		_update_ui()
 
 	queue_redraw()
-
-
-func _collect_bonus_at(cell: Vector2i) -> void:
-	if not level_bonus_values.has(cell):
-		return
-	if collected_bonus_cells.has(cell):
-		return
-
-	collected_bonus_cells[cell] = true
-	var bonus_value: int = int(level_bonus_values[cell])
-	collected_bonus_total += bonus_value
-	bonus_pickup_cell = cell
-	bonus_pickup_value = bonus_value
-	bonus_pickup_elapsed = 0.0
-	if audio_controller != null:
-		audio_controller.play_bonus(bonus_value)
 
 
 func _complete_level() -> void:
@@ -496,7 +435,7 @@ func _finish_level_complete() -> void:
 	completed = true
 	splash_mode = SplashMode.LEVEL_COMPLETE
 	_record_level_result(true)
-	run_total_score += _current_level_score()
+	run_total_score += _calculate_star_rating()
 	run_levels_cleared += 1
 	_set_footer_enabled(false)
 	_update_ui()
@@ -506,7 +445,6 @@ func _finish_level_complete() -> void:
 func _advance_to_next_level() -> void:
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
-
 	level += 1
 	level_retries = 0
 	_generate_level(false)
@@ -514,19 +452,19 @@ func _advance_to_next_level() -> void:
 
 func _update_ui() -> void:
 	maze_label.text = "LEVEL %d" % level
-	score_label.text = "SCORE %d" % _current_level_score()
-	timer_label.text = "TIME: %dS" % _current_time_left_seconds()
+	score_label.text = "TOTAL %d / %d" % [player_total, goal_target]
+	timer_label.text = "MOVES %d  |  TIME %dS" % [player_steps, _current_time_left_seconds()]
 	invert_button.text = _get_invert_button_text()
 
 
 func _update_completion_splash() -> void:
 	var stars: int = _calculate_star_rating()
 	splash_title_label.text = "LEVEL CLEAR"
-	splash_score_label.text = "SCORE %d  |  TIME %dS" % [_current_level_score(), _current_time_left_seconds()]
-	splash_optimal_label.visible = false
-	splash_optimal_label.text = ""
-	splash_retries_label.visible = false
-	splash_retries_label.text = ""
+	splash_score_label.text = "TOTAL %d / %d  |  MOVES %d" % [player_total, goal_target, player_steps]
+	splash_optimal_label.visible = true
+	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
+	splash_retries_label.visible = true
+	splash_retries_label.text = "TIME %dS  |  RETRIES %d" % [_current_elapsed_seconds(), level_retries]
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
@@ -540,19 +478,19 @@ func _update_completion_splash() -> void:
 	_sync_menu_focus(true)
 
 
-func _show_time_up_splash() -> void:
+func _show_failure_splash(title: String, caption: String) -> void:
 	splash_mode = SplashMode.LEVEL_FAILED
 	completed = true
 	_set_footer_enabled(false)
-	splash_title_label.text = "TIME UP"
-	splash_score_label.text = "SCORE %d" % _current_level_score()
-	splash_optimal_label.visible = false
-	splash_optimal_label.text = ""
+	splash_title_label.text = title
+	splash_score_label.text = "TOTAL %d / %d  |  MOVES %d" % [player_total, goal_target, player_steps]
+	splash_optimal_label.visible = true
+	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = false
 	splash_retries_label.text = ""
 	splash_stars_label.visible = false
-	splash_caption_label.visible = false
-	splash_caption_label.text = ""
+	splash_caption_label.visible = caption != ""
+	splash_caption_label.text = caption
 	splash_action_button.text = "RETRY"
 	splash_action_button.visible = true
 	splash_retry_button.visible = false
@@ -562,15 +500,11 @@ func _show_time_up_splash() -> void:
 
 
 func _show_run_complete_splash() -> void:
-	var include_current_level: bool = not completed and splash_mode != SplashMode.LEVEL_COMPLETE
-	if splash_mode == SplashMode.LEVEL_FAILED:
-		include_current_level = false
 	splash_mode = SplashMode.RUN_COMPLETE
 	completed = true
 	_set_footer_enabled(false)
-	var final_score: int = run_total_score + (_current_level_score() if include_current_level else 0)
 	splash_title_label.text = "RUN OVER"
-	splash_score_label.text = "SCORE %d" % final_score
+	splash_score_label.text = "STARS %d" % run_total_score
 	splash_optimal_label.visible = true
 	splash_optimal_label.text = "LEVELS %d" % run_levels_cleared
 	splash_retries_label.visible = false
@@ -586,46 +520,33 @@ func _show_run_complete_splash() -> void:
 	_sync_menu_focus(true)
 
 
-func _current_level_score() -> int:
-	return maxi(player_steps + collected_bonus_total, 0)
-
-
 func _record_level_result(was_successful: bool) -> void:
 	var sample: float = 0.0
 	if was_successful:
 		var path_efficiency: float = clampf(float(optimal_steps) / maxf(float(player_steps), float(optimal_steps)), 0.0, 1.0)
 		var time_efficiency: float = clampf(float(_current_time_left_seconds()) / maxf(float(par_time_seconds), 1.0), 0.0, 1.0)
-		var score_efficiency: float = 1.0 if _current_level_score() == 0 else clampf(1.0 - float(_current_level_score()) / maxf(float(optimal_steps), 1.0), 0.0, 1.0)
 		var retry_penalty: float = minf(float(level_retries) * 0.14, 0.35)
-		sample = clampf(path_efficiency * 0.4 + time_efficiency * 0.35 + score_efficiency * 0.25 - retry_penalty, 0.0, 1.0)
+		sample = clampf(path_efficiency * 0.6 + time_efficiency * 0.4 - retry_penalty, 0.0, 1.0)
 	else:
-		sample = maxf(0.0, player_skill_rating - 0.18 - float(level_retries) * 0.04)
+		sample = maxf(0.0, player_skill_rating - 0.16 - float(level_retries) * 0.03)
 
-	var adapt_rate: float = 0.4 if level <= 4 else 0.2
+	var adapt_rate: float = 0.38 if level <= 4 else 0.18
 	player_skill_rating = clampf(lerpf(player_skill_rating, sample, adapt_rate), 0.0, 1.0)
 
 
 func _calculate_star_rating() -> int:
-	var level_score: int = _current_level_score()
-	if level_score <= perfect_score:
+	var move_margin: int = maxi(player_steps - optimal_steps, 0)
+	if move_margin == 0 and level_retries == 0:
 		return 3
-
-	var two_star_limit: int = perfect_score + maxi(1, int(ceili(float(optimal_steps) * 0.2)))
-	if level_score <= two_star_limit:
+	if move_margin <= 2 + int(round(current_level_difficulty_scale)) and level_retries <= 1:
 		return 2
-
 	return 1
 
 
 func _build_star_string(stars: int) -> String:
 	var segments: Array[String] = []
-
 	for index in range(3):
-		if index < stars:
-			segments.append("★")
-		else:
-			segments.append("☆")
-
+		segments.append("★" if index < stars else "☆")
 	return " ".join(segments)
 
 
@@ -709,12 +630,12 @@ func _get_draw_area() -> Rect2:
 
 func _get_cell_size() -> float:
 	var draw_area: Rect2 = _get_draw_area()
-	return minf(draw_area.size.x / float(maze_width), draw_area.size.y / float(maze_height))
+	return minf(draw_area.size.x / float(grid_width), draw_area.size.y / float(grid_height))
 
 
 func _get_grid_origin(cell_size: float) -> Vector2:
 	var draw_area: Rect2 = _get_draw_area()
-	var grid_size: Vector2 = Vector2(maze_width, maze_height) * cell_size
+	var grid_size: Vector2 = Vector2(grid_width, grid_height) * cell_size
 	return draw_area.position + (draw_area.size - grid_size) * 0.5
 
 
@@ -729,7 +650,7 @@ func _cell_vector_to_screen(cell: Vector2) -> Vector2:
 
 
 func _get_tap_radius() -> float:
-	return maxf(_get_cell_size() * 0.28, 28.0)
+	return maxf(_get_cell_size() * 0.42, 34.0)
 
 
 func _build_ui() -> void:
@@ -784,7 +705,7 @@ func _build_ui() -> void:
 	bottom_content.add_theme_constant_override("separation", 12)
 	bottom_panel.add_child(bottom_content)
 
-	retry_button = _make_button("RETRY MAZE")
+	retry_button = _make_button("RETRY")
 	retry_button.pressed.connect(_restart_level)
 	_connect_button_focus(retry_button)
 	bottom_content.add_child(retry_button)
@@ -836,7 +757,7 @@ func _build_ui() -> void:
 	_connect_button_focus(splash_action_button)
 	splash_content.add_child(splash_action_button)
 
-	splash_retry_button = _make_button("RETRY MAZE")
+	splash_retry_button = _make_button("RETRY")
 	splash_retry_button.pressed.connect(_handle_splash_retry)
 	splash_retry_button.visible = false
 	_connect_button_focus(splash_retry_button)
@@ -886,7 +807,7 @@ func _handle_splash_retry() -> void:
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
 
-	run_total_score = maxi(run_total_score - _current_level_score(), 0)
+	run_total_score = maxi(run_total_score - _calculate_star_rating(), 0)
 	run_levels_cleared = maxi(run_levels_cleared - 1, 0)
 	splash_mode = SplashMode.NONE
 	completed = false
@@ -896,13 +817,6 @@ func _handle_splash_retry() -> void:
 func _handle_splash_end_run() -> void:
 	if audio_controller != null:
 		audio_controller.play_menu_confirm()
-	if splash_mode == SplashMode.LEVEL_FAILED:
-		_show_run_complete_splash()
-		return
-
-	if splash_mode != SplashMode.LEVEL_COMPLETE:
-		return
-
 	_show_run_complete_splash()
 
 
@@ -919,62 +833,26 @@ func _configure_input_actions() -> void:
 	_ensure_joypad_action(ACTION_INVERT, JOY_BUTTON_X)
 
 
-func _ensure_key_action(action_name: String, keycode: Key) -> void:
+func _ensure_key_action(action_name: StringName, keycode: Key) -> void:
 	if not InputMap.has_action(action_name):
 		InputMap.add_action(action_name)
+	for existing_event in InputMap.action_get_events(action_name):
+		if existing_event is InputEventKey and existing_event.keycode == keycode:
+			return
+	var key_event: InputEventKey = InputEventKey.new()
+	key_event.keycode = keycode
+	InputMap.action_add_event(action_name, key_event)
 
-	var event: InputEventKey = InputEventKey.new()
-	event.keycode = keycode
-	if not InputMap.action_has_event(action_name, event):
-		InputMap.action_add_event(action_name, event)
 
-
-func _ensure_joypad_action(action_name: String, button_index: JoyButton) -> void:
+func _ensure_joypad_action(action_name: StringName, button_index: JoyButton) -> void:
 	if not InputMap.has_action(action_name):
 		InputMap.add_action(action_name)
-
-	var event: InputEventJoypadButton = InputEventJoypadButton.new()
-	event.button_index = button_index
-	if not InputMap.action_has_event(action_name, event):
-		InputMap.action_add_event(action_name, event)
-
-
-func _is_skip_input_event(event: InputEvent) -> bool:
-	if event is InputEventScreenTouch:
-		var screen_touch: InputEventScreenTouch = event
-		return screen_touch.pressed
-	if event is InputEventMouseButton:
-		var mouse_button: InputEventMouseButton = event
-		return mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT
-	if event is InputEventKey:
-		var key_event: InputEventKey = event
-		return key_event.pressed and not key_event.echo
-	if event is InputEventJoypadButton:
-		var joypad_button: InputEventJoypadButton = event
-		return joypad_button.pressed
-	if event is InputEventJoypadMotion:
-		var joypad_motion: InputEventJoypadMotion = event
-		return absf(joypad_motion.axis_value) >= JOYPAD_TRIGGER
-	return false
-
-
-func _is_movement_input_event(event: InputEvent) -> bool:
-	if event is InputEventScreenTouch:
-		var screen_touch: InputEventScreenTouch = event
-		return screen_touch.pressed
-	if event is InputEventMouseButton:
-		var mouse_button: InputEventMouseButton = event
-		return mouse_button.pressed and mouse_button.button_index == MOUSE_BUTTON_LEFT
-	if event is InputEventKey:
-		var key_event: InputEventKey = event
-		return key_event.pressed and not key_event.echo and _direction_from_key(key_event) != Vector2i.ZERO
-	if event is InputEventJoypadButton:
-		var joypad_button: InputEventJoypadButton = event
-		return joypad_button.pressed and _direction_from_joypad_button(joypad_button) != Vector2i.ZERO
-	if event is InputEventJoypadMotion:
-		var joypad_motion: InputEventJoypadMotion = event
-		return absf(joypad_motion.axis_value) >= JOYPAD_TRIGGER
-	return false
+	for existing_event in InputMap.action_get_events(action_name):
+		if existing_event is InputEventJoypadButton and existing_event.button_index == button_index:
+			return
+	var button_event: InputEventJoypadButton = InputEventJoypadButton.new()
+	button_event.button_index = button_index
+	InputMap.action_add_event(action_name, button_event)
 
 
 func _get_splash_action_text() -> String:
@@ -1029,10 +907,6 @@ func _is_goal_clear_active() -> bool:
 	return goal_clear_elapsed < GOAL_CLEAR_DURATION
 
 
-func _is_bonus_pickup_active() -> bool:
-	return bonus_pickup_elapsed < BONUS_PICKUP_DURATION and bonus_pickup_cell.x >= 0
-
-
 func _is_move_animation_active() -> bool:
 	return move_animation_elapsed < MOVE_ANIMATION_DURATION
 
@@ -1057,6 +931,34 @@ func _skip_active_animations() -> void:
 		return
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
+
+
+func _is_skip_input_event(event: InputEvent) -> bool:
+	if event is InputEventScreenTouch:
+		return event.pressed
+	if event is InputEventMouseButton:
+		return event.pressed
+	if event is InputEventKey:
+		return event.pressed and not event.echo
+	if event is InputEventJoypadButton:
+		return event.pressed
+	if event is InputEventJoypadMotion:
+		return absf(event.axis_value) >= JOYPAD_TRIGGER
+	return false
+
+
+func _is_movement_input_event(event: InputEvent) -> bool:
+	if event is InputEventKey:
+		return _direction_from_key(event) != Vector2i.ZERO
+	if event is InputEventJoypadButton:
+		return _direction_from_joypad_button(event) != Vector2i.ZERO
+	if event is InputEventJoypadMotion:
+		return absf(event.axis_value) >= JOYPAD_TRIGGER
+	if event is InputEventMouseButton and event.pressed:
+		return true
+	if event is InputEventScreenTouch and event.pressed:
+		return true
+	return false
 
 
 func _get_marker_intro_scale(base_radius: float) -> float:
@@ -1110,13 +1012,13 @@ func _apply_palette(level_value: int) -> void:
 		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.1, 1.0), 0.26, 0.84)
 		playfield_color = Color("ffffff")
 		playfield_trim_color = Color.from_hsv(accent_hue, 0.42, 0.62)
-		wall_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.46, 0.34)
-		node_color = Color("6f8098")
+		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.05, 1.0), 0.36, 0.5)
+		start_color = Color.from_hsv(0.35, 0.45, 0.7)
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.74, 0.9)
-		bonus_gain_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.72, 0.82)
-		bonus_loss_color = Color.from_hsv(0.33 - 0.04 * difficulty, 0.6, 0.68)
+		warning_color = Color.from_hsv(0.02 + 0.01 * difficulty, 0.68, 0.84)
 		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.58, 0.82)
 		player_core_color = Color("ffe8b6")
+		cell_number_color = Color("203147")
 		panel_color = Color("e6eef8")
 		panel_border_color = playfield_trim_color
 		retry_button_color = Color("d8e3f2")
@@ -1133,13 +1035,13 @@ func _apply_palette(level_value: int) -> void:
 		secondary_glow_color = Color.from_hsv(fposmod(accent_hue + 0.13, 1.0), 0.28, 0.72)
 		playfield_color = Color("142032")
 		playfield_trim_color = Color.from_hsv(accent_hue, 0.44, 0.92)
-		wall_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.42, 0.82)
-		node_color = Color("d7e3f4")
+		grid_line_color = Color.from_hsv(fposmod(accent_hue - 0.03, 1.0), 0.42, 0.82)
+		start_color = Color("5fd08c")
 		goal_color = Color.from_hsv(0.12 - 0.02 * difficulty, 0.72, 0.98)
-		bonus_gain_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
-		bonus_loss_color = Color.from_hsv(0.33 - 0.04 * difficulty, 0.7, 0.9)
+		warning_color = Color.from_hsv(0.01 + 0.02 * difficulty, 0.74, 0.94)
 		player_color = Color.from_hsv(0.54 - 0.03 * difficulty, 0.56, 0.98)
 		player_core_color = Color("ffe7b3")
+		cell_number_color = Color("d7e3f4")
 		panel_color = Color("1b2a40")
 		panel_border_color = playfield_trim_color
 		retry_button_color = Color("314969")
@@ -1163,7 +1065,7 @@ func _apply_palette_to_ui() -> void:
 	maze_label.add_theme_color_override("font_outline_color", outline_color)
 	score_label.add_theme_color_override("font_color", goal_color)
 	score_label.add_theme_color_override("font_outline_color", outline_color)
-	timer_label.add_theme_color_override("font_color", goal_color)
+	timer_label.add_theme_color_override("font_color", text_color)
 	timer_label.add_theme_color_override("font_outline_color", outline_color)
 
 	retry_button.add_theme_stylebox_override("normal", _make_button_style(retry_button_color))
@@ -1195,12 +1097,12 @@ func _apply_palette_to_ui() -> void:
 	splash_title_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_score_label.add_theme_color_override("font_color", player_color)
 	splash_score_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_optimal_label.add_theme_color_override("font_color", bonus_loss_color)
+	splash_optimal_label.add_theme_color_override("font_color", start_color)
 	splash_optimal_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_retries_label.add_theme_color_override("font_color", text_color)
 	splash_retries_label.add_theme_color_override("font_outline_color", outline_color)
 	splash_stars_label.add_theme_color_override("font_outline_color", outline_color)
-	splash_caption_label.add_theme_color_override("font_color", secondary_glow_color.lightened(0.2))
+	splash_caption_label.add_theme_color_override("font_color", warning_color.lightened(0.08))
 	splash_caption_label.add_theme_color_override("font_outline_color", outline_color)
 
 
@@ -1236,26 +1138,26 @@ func _refresh_ui_layout() -> void:
 
 func _apply_ui_metrics() -> void:
 	var scale: float = _get_ui_scale()
-	var header_size: int = int(round(70.0 * scale))
-	var detail_size: int = int(round(50.0 * scale))
+	var header_size: int = int(round(62.0 * scale))
+	var detail_size: int = int(round(44.0 * scale))
 	var button_size: int = int(round(34.0 * scale))
 	var splash_title_size: int = int(round(76.0 * scale))
-	var splash_stat_size: int = int(round(50.0 * scale))
+	var splash_stat_size: int = int(round(46.0 * scale))
 	var splash_star_size: int = int(round(92.0 * scale))
-	var splash_caption_size: int = int(round(36.0 * scale))
+	var splash_caption_size: int = int(round(34.0 * scale))
 
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(score_label, header_size, 7, goal_color)
 	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_apply_label_style(timer_label, detail_size, 6, goal_color)
+	_apply_label_style(timer_label, detail_size, 6, text_color)
 	timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
 	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
-	_apply_label_style(splash_optimal_label, splash_stat_size, 6, bonus_loss_color)
+	_apply_label_style(splash_optimal_label, splash_stat_size, 6, start_color)
 	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
-	_apply_label_style(splash_caption_label, splash_caption_size, 6, secondary_glow_color.lightened(0.2))
+	_apply_label_style(splash_caption_label, splash_caption_size, 6, warning_color.lightened(0.08))
 
 	splash_stars_label.add_theme_font_override("font", ui_font)
 	splash_stars_label.add_theme_font_size_override("font_size", splash_star_size)
@@ -1477,25 +1379,56 @@ func _draw_playfield_trim(draw_area: Rect2) -> void:
 	draw_rect(draw_area.grow(2.0), _with_alpha(playfield_trim_color, 0.58), false, 3.0)
 
 
-func _draw_bonus_marker(center: Vector2, radius: float, pulse: float, bonus_value: int) -> void:
-	draw_circle(center, radius * (1.04 + pulse * 0.03), _with_alpha(outline_color, 0.24))
-	draw_circle(center, radius, bonus_gain_color if bonus_value > 0 else bonus_loss_color)
+func _draw_grid_cells(origin: Vector2, cell_size: float) -> void:
+	var line_width: float = clampf(cell_size * 0.04, 2.0, 5.0)
+	var number_font_size: int = clampi(int(round(cell_size * 0.34)), 16, 46)
+	var goal_font_size: int = clampi(int(round(cell_size * 0.28)), 16, 40)
+
+	for y in range(grid_height):
+		for x in range(grid_width):
+			var cell: Vector2i = Vector2i(x, y)
+			var rect: Rect2 = Rect2(origin + Vector2(x, y) * cell_size, Vector2.ONE * cell_size)
+			var fill_color: Color = _get_cell_fill_color(cell)
+			draw_rect(rect, fill_color, true)
+			draw_rect(rect, _with_alpha(grid_line_color, 0.75), false, line_width)
+
+			if cell == goal_cell:
+				draw_rect(rect.grow(-line_width * 0.7), _with_alpha(goal_color, 0.16), false, maxf(2.0, line_width * 0.9))
+				_draw_centered_text(rect, str(goal_target), goal_font_size, goal_color)
+			else:
+				_draw_centered_text(rect, str(_get_cell_value(cell)), number_font_size, cell_number_color)
+
+			if cell == start_cell:
+				draw_rect(rect.grow(-line_width * 1.3), _with_alpha(start_color, 0.9), false, maxf(2.0, line_width * 1.1))
 
 
-func _draw_bonus_pickup_effect(center: Vector2, radius: float, bonus_value: int) -> void:
-	var progress: float = clampf(bonus_pickup_elapsed / BONUS_PICKUP_DURATION, 0.0, 1.0)
-	var wave: float = sin(progress * PI)
-	var color: Color = bonus_gain_color if bonus_value > 0 else bonus_loss_color
-	draw_circle(center, radius * (1.12 + wave * 0.26), _with_alpha(color, 0.22 * (1.0 - progress)))
-	draw_arc(center, radius * (1.18 + progress * 0.85), 0.0, TAU, 40, _with_alpha(color.lightened(0.18), 0.95 * (1.0 - progress)), 3.0)
-	draw_arc(center, radius * (0.86 + progress * 0.55), 0.0, TAU, 32, _with_alpha(player_core_color, 0.72 * (1.0 - progress)), 2.0)
+func _draw_goal_overlay(cell_size: float) -> void:
+	var center: Vector2 = _cell_to_screen(goal_cell)
+	var radius: float = cell_size * 0.42 * _get_goal_clear_scale()
+	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.6)
+	var intro_scale: float = _get_marker_intro_scale(radius)
+	draw_arc(center, radius * (1.16 + pulse * 0.1) * intro_scale, 0.0, TAU, 40, _with_alpha(goal_color.lightened(0.16), 0.94), maxf(cell_size * 0.04, 2.0))
+	draw_arc(center, radius * 0.82 * intro_scale, 0.0, TAU, 32, _with_alpha(goal_color, 0.42), maxf(cell_size * 0.03, 2.0))
 
 
-func _draw_goal_marker(center: Vector2, radius: float, pulse: float) -> void:
-	var star_points: PackedVector2Array = _make_star_polygon(center, radius * 1.04, radius * 0.48, 5, -PI / 2.0)
-	draw_colored_polygon(star_points, goal_color)
-	draw_circle(center, radius * 0.26, player_core_color)
-	draw_arc(center, radius * (1.18 + pulse * 0.16), 0.0, TAU, 40, _with_alpha(goal_color.lightened(0.18), 0.96), 3.0)
+func _draw_start_overlay(cell_size: float) -> void:
+	var center: Vector2 = _cell_to_screen(start_cell)
+	var radius: float = cell_size * 0.16
+	var diamond: PackedVector2Array = PackedVector2Array([
+		center + Vector2(0.0, -radius),
+		center + Vector2(radius, 0.0),
+		center + Vector2(0.0, radius),
+		center + Vector2(-radius, 0.0),
+	])
+	draw_colored_polygon(diamond, start_color)
+
+
+func _draw_player_overlay(cell_size: float) -> void:
+	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 3.0)
+	var player_radius: float = clampf(cell_size * 0.19, 8.0, 18.0)
+	var player_intro_scale: float = _get_marker_intro_scale(player_radius)
+	var player_clear_scale: float = _get_player_clear_scale()
+	_draw_player_marker(_get_player_draw_position(), player_radius * player_intro_scale * player_clear_scale, pulse)
 
 
 func _draw_player_marker(center: Vector2, radius: float, pulse: float) -> void:
@@ -1510,22 +1443,39 @@ func _draw_player_marker(center: Vector2, radius: float, pulse: float) -> void:
 	draw_arc(center + Vector2(0.0, radius * 0.04), radius * 0.42, PI * 0.18, PI * 0.82, 20, outline_color, maxf(radius * 0.11, 2.0))
 
 
-func _make_regular_polygon(center: Vector2, radius: float, sides: int, rotation: float) -> PackedVector2Array:
-	var points: PackedVector2Array = PackedVector2Array()
-	for index in range(sides):
-		var angle: float = rotation + TAU * float(index) / float(sides)
-		points.append(center + Vector2(cos(angle), sin(angle)) * radius)
-	return points
+func _draw_centered_text(rect: Rect2, text: String, font_size: int, color: Color) -> void:
+	if ui_font == null:
+		return
+	var text_size: Vector2 = ui_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var baseline: Vector2 = Vector2(
+		rect.position.x + (rect.size.x - text_size.x) * 0.5,
+		rect.position.y + rect.size.y * 0.5 + ui_font.get_ascent(font_size) * 0.38
+	)
+	for offset in [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]:
+		draw_string(ui_font, baseline + offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _with_alpha(outline_color, 0.9))
+	draw_string(ui_font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
 
 
-func _make_star_polygon(center: Vector2, outer_radius: float, inner_radius: float, points_count: int, rotation: float) -> PackedVector2Array:
-	var points: PackedVector2Array = PackedVector2Array()
-	var total_points: int = points_count * 2
-	for index in range(total_points):
-		var angle: float = rotation + TAU * float(index) / float(total_points)
-		var point_radius: float = outer_radius if index % 2 == 0 else inner_radius
-		points.append(center + Vector2(cos(angle), sin(angle)) * point_radius)
-	return points
+func _get_cell_fill_color(cell: Vector2i) -> Color:
+	if cell == goal_cell:
+		return playfield_color.lerp(goal_color, 0.18)
+	if cell == start_cell:
+		return playfield_color.lerp(start_color, 0.16)
+
+	var value_ratio: float = clampf(float(_get_cell_value(cell) - 1) / maxf(float(max_cell_value - 1), 1.0), 0.0, 1.0)
+	return playfield_color.lerp(playfield_trim_color, 0.08 + value_ratio * 0.32)
+
+
+func _orthogonal_neighbors(cell: Vector2i) -> Array[Vector2i]:
+	return MazeGeneratorScript.orthogonal_neighbors(grid_width, grid_height, cell)
+
+
+func _is_inside(cell: Vector2i) -> bool:
+	return MazeGeneratorScript.is_inside(cell, grid_width, grid_height)
+
+
+func _get_cell_value(cell: Vector2i) -> int:
+	return int(cell_values[cell.y][cell.x])
 
 
 func _with_alpha(color: Color, alpha: float) -> Color:
@@ -1542,9 +1492,10 @@ func _current_time_left_seconds() -> int:
 
 func _calculate_par_time_seconds() -> int:
 	var skill_pressure: float = _get_skill_pressure(level)
-	var base_time: float = float(optimal_steps) * lerpf(0.78, 0.68, skill_pressure)
-	var layout_time: float = sqrt(float(maze_width * maze_height)) * lerpf(0.54, 0.44, skill_pressure)
-	return maxi(5, int(ceili(base_time + layout_time + 1.0)))
+	var base_time: float = float(optimal_steps) * lerpf(1.05, 0.9, skill_pressure)
+	var layout_time: float = sqrt(float(grid_width * grid_height)) * lerpf(0.72, 0.56, skill_pressure)
+	var target_time: float = float(goal_target) * lerpf(0.18, 0.14, skill_pressure)
+	return maxi(8, int(ceili(base_time + layout_time + target_time + 1.0)))
 
 
 func _fail_level_timeout() -> void:
@@ -1557,4 +1508,17 @@ func _fail_level_timeout() -> void:
 	_record_level_result(false)
 	if audio_controller != null:
 		audio_controller.play_timeout()
-	_show_time_up_splash()
+	_show_failure_splash("TIME UP", "Reach the goal with the exact total before the timer runs out.")
+
+
+func _fail_level_target_exceeded() -> void:
+	if splash_mode != SplashMode.NONE or completed:
+		return
+
+	move_animation_elapsed = MOVE_ANIMATION_DURATION
+	goal_clear_elapsed = GOAL_CLEAR_DURATION
+	pending_goal_completion = false
+	_record_level_result(false)
+	if audio_controller != null:
+		audio_controller.play_timeout()
+	_show_failure_splash("TARGET EXCEEDED", "Every move adds more, so totals above the goal cannot recover.")

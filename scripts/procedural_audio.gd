@@ -4,6 +4,7 @@ class_name ProceduralAudio
 const SAMPLE_RATE := 22050
 const SFX_POOL_SIZE := 6
 
+var audio_enabled: bool = true
 var music_player: AudioStreamPlayer
 var sfx_players: Array[AudioStreamPlayer] = []
 var cached_sfx: Dictionary = {}
@@ -12,21 +13,36 @@ var current_music_signature: String = ""
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	audio_enabled = DisplayServer.get_name() != "headless"
+	if not audio_enabled:
+		return
 	_build_players()
 	_build_sfx_cache()
 	update_level_music(1, 1)
 
 
+func _exit_tree() -> void:
+	if music_player != null:
+		music_player.stop()
+		music_player.stream = null
+
+	for player in sfx_players:
+		player.stop()
+		player.stream = null
+
+	cached_sfx.clear()
+	sfx_players.clear()
+	current_music_signature = ""
+
+
 func update_level_music(level: int, level_seed: int) -> void:
+	if not audio_enabled:
+		return
 	_update_music_stream(level, level_seed)
 
 
 func play_move() -> void:
 	_play_sfx("move")
-
-
-func play_bonus(bonus_value: int) -> void:
-	_play_sfx("bonus_bad" if bonus_value > 0 else "bonus_good")
 
 
 func play_goal() -> void:
@@ -70,8 +86,6 @@ func _build_players() -> void:
 
 func _build_sfx_cache() -> void:
 	cached_sfx["move"] = _build_move_stream()
-	cached_sfx["bonus_good"] = _build_bonus_good_stream()
-	cached_sfx["bonus_bad"] = _build_bonus_bad_stream()
 	cached_sfx["goal"] = _build_goal_stream()
 	cached_sfx["timeout"] = _build_timeout_stream()
 	cached_sfx["menu_move"] = _build_menu_move_stream()
@@ -81,6 +95,8 @@ func _build_sfx_cache() -> void:
 
 
 func _play_sfx(key: String) -> void:
+	if not audio_enabled:
+		return
 	if not cached_sfx.has(key):
 		return
 	var player: AudioStreamPlayer = _get_available_sfx_player()
@@ -256,37 +272,6 @@ func _build_move_stream() -> AudioStreamWAV:
 		var freq: float = lerpf(520.0, 760.0, progress)
 		var sample: float = _triangle_wave(time * freq) * env
 		data.encode_s16(frame * 2, int(round(clampf(sample * 0.55, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
-
-
-func _build_bonus_good_stream() -> AudioStreamWAV:
-	var duration: float = 0.2
-	var total_frames: int = int(round(duration * SAMPLE_RATE))
-	var data: PackedByteArray = PackedByteArray()
-	data.resize(total_frames * 2)
-	for frame in range(total_frames):
-		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
-		var time: float = float(frame) / SAMPLE_RATE
-		var env: float = pow(1.0 - progress, 1.7)
-		var local_freq: float = 420.0 if progress < 0.5 else 680.0
-		var harmony: float = 560.0 if progress < 0.5 else 920.0
-		var sample: float = (_triangle_wave(time * local_freq) * 0.65 + _sine_wave(time * harmony) * 0.35) * env
-		data.encode_s16(frame * 2, int(round(clampf(sample * 0.62, -1.0, 1.0) * 32767.0)))
-	return _make_wav_stream(data)
-
-
-func _build_bonus_bad_stream() -> AudioStreamWAV:
-	var duration: float = 0.22
-	var total_frames: int = int(round(duration * SAMPLE_RATE))
-	var data: PackedByteArray = PackedByteArray()
-	data.resize(total_frames * 2)
-	for frame in range(total_frames):
-		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
-		var time: float = float(frame) / SAMPLE_RATE
-		var env: float = pow(1.0 - progress, 1.5)
-		var freq: float = lerpf(340.0, 160.0, progress)
-		var sample: float = (_square_wave(time * freq) * 0.6 + _sine_wave(time * (freq * 0.5)) * 0.4) * env
-		data.encode_s16(frame * 2, int(round(clampf(sample * 0.58, -1.0, 1.0) * 32767.0)))
 	return _make_wav_stream(data)
 
 

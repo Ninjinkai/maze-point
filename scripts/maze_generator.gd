@@ -1,390 +1,323 @@
 extends RefCounted
 class_name MazeGenerator
 
-const DIRS := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
-const DIR_BITS := [1, 2, 4, 8]
-const OPPOSITE_BITS := [4, 8, 1, 2]
-const BONUS_VALUE := 5
+const DIRS: Array[Vector2i] = [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
+const MAX_GENERATION_ATTEMPTS := 220
+const MAX_PATH_SEARCH_ATTEMPTS := 48
 
 
 static func generate(width: int, height: int, seed: int, difficulty_scale: float = 1.0) -> Dictionary:
-	var cells: Array[PackedInt32Array] = []
-	var visited: Array[PackedByteArray] = []
-
-	for y in range(height):
-		var cell_row: PackedInt32Array = PackedInt32Array()
-		cell_row.resize(width)
-		cells.append(cell_row)
-
-		var visited_row: PackedByteArray = PackedByteArray()
-		visited_row.resize(width)
-		visited.append(visited_row)
-
-	var stack: Array[Vector2i] = [Vector2i.ZERO]
-	var visited_count: int = 1
-	visited[0][0] = 1
-
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed
 
-	while visited_count < width * height:
-		var current: Vector2i = stack[stack.size() - 1]
-		var options: Array[int] = []
+	for _attempt in range(MAX_GENERATION_ATTEMPTS):
+		var candidate: Dictionary = _build_candidate(width, height, rng, difficulty_scale)
+		if not candidate.is_empty():
+			return candidate
 
-		for dir_index in range(DIRS.size()):
-			var candidate: Vector2i = current + DIRS[dir_index]
-			if not _is_inside(candidate, width, height):
-				continue
-			if visited[candidate.y][candidate.x] != 0:
-				continue
-			options.append(dir_index)
-
-		if options.is_empty():
-			stack.pop_back()
-			continue
-
-		var dir_index: int = options[rng.randi_range(0, options.size() - 1)]
-		var next_cell: Vector2i = current + DIRS[dir_index]
-		_add_connection(cells, current, dir_index)
-		visited[next_cell.y][next_cell.x] = 1
-		visited_count += 1
-		stack.append(next_cell)
-
-	_add_extra_connections(cells, width, height, rng, difficulty_scale)
-
-	var start_sweep: Dictionary = _find_farthest(cells, width, height, Vector2i.ZERO)
-	var start: Vector2i = start_sweep["cell"]
-	var goal_sweep: Dictionary = _find_farthest(cells, width, height, start)
-	var goal: Vector2i = goal_sweep["cell"]
-	var start_bfs: Dictionary = _bfs(cells, width, height, start)
-	var goal_bfs: Dictionary = _bfs(cells, width, height, goal)
-	var solution_path: Array[Vector2i] = _reconstruct_path(start_bfs["previous"], start, goal)
-	var bonuses: Array[Dictionary] = _build_bonuses(
-		cells,
-		width,
-		height,
-		start,
-		goal,
-		solution_path,
-		start_bfs["distances"],
-		goal_bfs["distances"],
-		difficulty_scale,
-		rng
-	)
-
-	return {
-		"cells": cells,
-		"start": start,
-		"goal": goal,
-		"solution_path": solution_path,
-		"solution_length": max(solution_path.size() - 1, 0),
-		"bonuses": bonuses,
-		"perfect_score": 0,
-	}
+	return _build_fallback_candidate(width, height, rng, difficulty_scale)
 
 
-static func connected_neighbors(cells: Array[PackedInt32Array], width: int, height: int, cell: Vector2i) -> Array[Vector2i]:
+static func orthogonal_neighbors(width: int, height: int, cell: Vector2i) -> Array[Vector2i]:
 	var results: Array[Vector2i] = []
-	var mask: int = cells[cell.y][cell.x]
-
-	for dir_index in range(DIRS.size()):
-		if (mask & DIR_BITS[dir_index]) == 0:
-			continue
-
-		var candidate: Vector2i = cell + DIRS[dir_index]
-		if _is_inside(candidate, width, height):
-			results.append(candidate)
-
+	for direction in DIRS:
+		var neighbor: Vector2i = cell + direction
+		if is_inside(neighbor, width, height):
+			results.append(neighbor)
 	return results
 
 
-static func has_connection(cells: Array[PackedInt32Array], cell: Vector2i, direction: Vector2i) -> bool:
-	var dir_index: int = DIRS.find(direction)
-	if dir_index == -1:
-		return false
-	return (cells[cell.y][cell.x] & DIR_BITS[dir_index]) != 0
+static func is_inside(cell: Vector2i, width: int, height: int) -> bool:
+	return cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height
 
 
-static func _add_extra_connections(cells: Array[PackedInt32Array], width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float) -> void:
-	var candidates: Array[Dictionary] = _build_connection_candidates(cells, width, height)
-	var extra_connections: int = mini(_count_extra_connections(width, height, difficulty_scale), candidates.size())
+static func _build_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float) -> Dictionary:
+	var endpoints: Dictionary = _pick_start_and_goal(width, height, rng)
+	if endpoints.is_empty():
+		return {}
 
-	for _unused in range(extra_connections):
-		if candidates.is_empty():
-			return
+	var start: Vector2i = endpoints["start"]
+	var goal: Vector2i = endpoints["goal"]
+	var minimum_moves: int = _manhattan_distance(start, goal)
+	var maximum_moves: int = mini(width * height - 1, minimum_moves + _detour_budget(width, height, difficulty_scale))
+	if maximum_moves < minimum_moves:
+		return {}
 
-		var index: int = rng.randi_range(0, candidates.size() - 1)
-		var candidate: Dictionary = candidates[index]
-		candidates.remove_at(index)
+	var move_options: Array[int] = []
+	for moves in range(minimum_moves, maximum_moves + 1):
+		if ((moves - minimum_moves) % 2) == 0:
+			move_options.append(moves)
+	if move_options.is_empty():
+		return {}
 
-		var cell: Vector2i = candidate["cell"]
-		var dir_index: int = candidate["dir_index"]
-		_add_connection(cells, cell, dir_index)
-
-
-static func _build_connection_candidates(cells: Array[PackedInt32Array], width: int, height: int) -> Array[Dictionary]:
-	var candidates: Array[Dictionary] = []
-
-	for y in range(height):
-		for x in range(width):
-			var cell: Vector2i = Vector2i(x, y)
-
-			for dir_index in [0, 1]:
-				var neighbor: Vector2i = cell + DIRS[dir_index]
-				if not _is_inside(neighbor, width, height):
-					continue
-				if has_connection(cells, cell, DIRS[dir_index]):
-					continue
-
-				candidates.append({
-					"cell": cell,
-					"dir_index": dir_index,
-				})
-
-	return candidates
-
-
-static func _count_extra_connections(width: int, height: int, difficulty_scale: float) -> int:
-	var area: int = width * height
-	var ratio: float = clampf(0.05 + float(width + height) / 220.0 + (difficulty_scale - 1.0) * 0.035, 0.05, 0.2)
-	return max(1, int(round(float(area) * ratio)))
-
-
-static func _build_bonuses(
-	cells: Array[PackedInt32Array],
-	width: int,
-	height: int,
-	start: Vector2i,
-	goal: Vector2i,
-	solution_path: Array[Vector2i],
-	start_distances: Dictionary,
-	goal_distances: Dictionary,
-	difficulty_scale: float,
-	rng: RandomNumberGenerator
-) -> Array[Dictionary]:
-	var bonuses: Array[Dictionary] = []
-	var bonus_cells: Array[Vector2i] = []
-	var optimal_length: int = max(solution_path.size() - 1, 0)
-
-	if optimal_length <= 0:
-		return bonuses
-
-	var route_penalty_count: int = clampi(int(floor(float(optimal_length) / 18.0 + maxf(difficulty_scale - 1.0, 0.0) * 0.6)), 0, 3)
-	var route_negative_steps: Array[int] = _pick_path_steps(
-		optimal_length,
-		clampi(int(ceili(float(optimal_length + route_penalty_count * BONUS_VALUE) / float(BONUS_VALUE))), 1, optimal_length - 1),
-		rng
-	)
-	var used_route_steps: Dictionary = {}
-	for step_index in route_negative_steps:
-		used_route_steps[step_index] = true
-
-	for step_index in route_negative_steps:
-		var bonus_cell: Vector2i = solution_path[step_index]
-		bonuses.append({
-			"cell": bonus_cell,
-			"value": -BONUS_VALUE,
-		})
-		bonus_cells.append(bonus_cell)
-
-	var route_positive_steps: Array[int] = _pick_path_steps(optimal_length, route_penalty_count, rng, used_route_steps)
-	for step_index in route_positive_steps:
-		used_route_steps[step_index] = true
-		var penalty_cell: Vector2i = solution_path[step_index]
-		bonuses.append({
-			"cell": penalty_cell,
-			"value": BONUS_VALUE,
-		})
-		bonus_cells.append(penalty_cell)
-
-	var route_score: int = optimal_length + route_positive_steps.size() * BONUS_VALUE - route_negative_steps.size() * BONUS_VALUE
-	if route_score > 0:
-		var extra_negative_steps: Array[int] = _pick_path_steps(optimal_length, int(ceili(float(route_score) / float(BONUS_VALUE))), rng, used_route_steps)
-		for step_index in extra_negative_steps:
-			used_route_steps[step_index] = true
-			var extra_bonus_cell: Vector2i = solution_path[step_index]
-			bonuses.append({
-				"cell": extra_bonus_cell,
-				"value": -BONUS_VALUE,
-			})
-			bonus_cells.append(extra_bonus_cell)
-
-	var detour_gain_candidates: Array[Dictionary] = []
-	var detour_loss_candidates: Array[Dictionary] = []
-	var path_lookup: Dictionary = {}
-	for path_cell in solution_path:
-		path_lookup[path_cell] = true
-
-	for y in range(height):
-		for x in range(width):
-			var cell: Vector2i = Vector2i(x, y)
-			if cell == start or cell == goal or bonus_cells.has(cell):
-				continue
-
-			if not start_distances.has(cell) or not goal_distances.has(cell):
-				continue
-
-			var detour_cost: int = int(start_distances[cell]) + int(goal_distances[cell]) - optimal_length
-			if detour_cost < 1:
-				continue
-
-			var candidate: Dictionary = {
-				"cell": cell,
-				"detour": detour_cost,
-			}
-			if not path_lookup.has(cell) and detour_cost <= BONUS_VALUE + 1:
-				detour_loss_candidates.append(candidate)
-			if not path_lookup.has(cell):
-				detour_gain_candidates.append(candidate)
-
-	detour_loss_candidates.sort_custom(
-		func(a: Dictionary, b: Dictionary) -> bool:
-			return int(a["detour"]) < int(b["detour"])
-	)
-	detour_gain_candidates.sort_custom(
-		func(a: Dictionary, b: Dictionary) -> bool:
-			return int(a["detour"]) > int(b["detour"])
-	)
-
-	var detour_loss_limit: int = mini(detour_loss_candidates.size(), clampi(route_penalty_count + int(round(maxf(difficulty_scale - 1.0, 0.0))), 1, 4))
-	for candidate_variant in detour_loss_candidates:
-		if detour_loss_limit <= 0:
-			break
-
-		var candidate: Dictionary = candidate_variant
-		var cell: Vector2i = candidate["cell"]
-		if not _is_bonus_far_enough(cell, bonus_cells):
-			continue
-
-		bonuses.append({
-			"cell": cell,
-			"value": -BONUS_VALUE,
-		})
-		bonus_cells.append(cell)
-		detour_loss_limit -= 1
-
-	var detour_gain_limit: int = mini(detour_gain_candidates.size(), maxi(2, int(round(float(route_negative_steps.size()) * 0.7)) + int(round(maxf(difficulty_scale - 1.0, 0.0) * 2.0))))
-	for candidate_variant in detour_gain_candidates:
-		if detour_gain_limit <= 0:
-			break
-
-		var candidate: Dictionary = candidate_variant
-		var cell: Vector2i = candidate["cell"]
-		if not _is_bonus_far_enough(cell, bonus_cells):
-			continue
-
-		bonuses.append({
-			"cell": cell,
-			"value": BONUS_VALUE,
-		})
-		bonus_cells.append(cell)
-		detour_gain_limit -= 1
-
-	return bonuses
-static func _pick_path_steps(optimal_length: int, count: int, rng: RandomNumberGenerator, excluded_steps: Dictionary = {}) -> Array[int]:
-	var candidates: Array[int] = []
-	for step_index in range(1, optimal_length):
-		if excluded_steps.has(step_index):
-			continue
-		candidates.append(step_index)
-
-	for index in range(candidates.size() - 1, 0, -1):
+	for index in range(move_options.size() - 1, 0, -1):
 		var swap_index: int = rng.randi_range(0, index)
-		var temp: int = candidates[index]
-		candidates[index] = candidates[swap_index]
-		candidates[swap_index] = temp
+		var temp: int = move_options[index]
+		move_options[index] = move_options[swap_index]
+		move_options[swap_index] = temp
 
-	var selected: Array[int] = []
-	for step_index in candidates:
-		var is_far_enough: bool = true
-		for existing_step in selected:
-			if absi(step_index - existing_step) < 2:
-				is_far_enough = false
-				break
-		if not is_far_enough:
+	for desired_moves in move_options:
+		var intended_path: Array[Vector2i] = _find_random_path(width, height, start, goal, desired_moves, rng)
+		if intended_path.is_empty():
 			continue
-		selected.append(step_index)
-		if selected.size() >= count:
-			selected.sort()
-			return selected
 
-	for step_index in candidates:
-		if selected.has(step_index):
+		var values: Array[PackedInt32Array] = _build_values(width, height, intended_path, goal, rng, difficulty_scale)
+		var target_total: int = _sum_path_total(values, intended_path, goal)
+		if target_total <= 0:
 			continue
-		selected.append(step_index)
-		if selected.size() >= count:
-			break
 
-	selected.sort()
-	return selected
+		var solution_summary: Dictionary = _find_unique_optimal_solution(values, width, height, start, goal, target_total, desired_moves)
+		if solution_summary.is_empty():
+			continue
 
+		return {
+			"cell_values": values,
+			"start": start,
+			"goal": goal,
+			"target_total": target_total,
+			"solution_path": solution_summary["path"],
+			"solution_length": solution_summary["steps"],
+			"max_cell_value": _get_max_cell_value(difficulty_scale),
+		}
 
-static func _is_bonus_far_enough(cell: Vector2i, existing_bonus_cells: Array[Vector2i]) -> bool:
-	for existing_cell in existing_bonus_cells:
-		var manhattan_distance: int = absi(cell.x - existing_cell.x) + absi(cell.y - existing_cell.y)
-		if manhattan_distance < 3:
-			return false
-	return true
-
-
-static func _add_connection(cells: Array[PackedInt32Array], cell: Vector2i, dir_index: int) -> void:
-	var next_cell: Vector2i = cell + DIRS[dir_index]
-	cells[cell.y][cell.x] |= DIR_BITS[dir_index]
-	cells[next_cell.y][next_cell.x] |= OPPOSITE_BITS[dir_index]
+	return {}
 
 
-static func _find_farthest(cells: Array[PackedInt32Array], width: int, height: int, start: Vector2i) -> Dictionary:
-	var bfs: Dictionary = _bfs(cells, width, height, start)
-	var distances: Dictionary = bfs["distances"]
-	var farthest: Vector2i = start
+static func _build_fallback_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float) -> Dictionary:
+	var start: Vector2i = Vector2i(0, height / 2)
+	var goal: Vector2i = Vector2i(width - 1, height / 2)
+	if start == goal:
+		goal = Vector2i(width - 1, mini(height - 1, start.y + 1))
 
-	for candidate_variant in distances.keys():
-		var candidate: Vector2i = candidate_variant
-		if int(distances[candidate]) > int(distances[farthest]):
-			farthest = candidate
-
-	return {
-		"cell": farthest,
-		"previous": bfs["previous"],
-		"distances": distances,
-	}
-
-
-static func _bfs(cells: Array[PackedInt32Array], width: int, height: int, start: Vector2i) -> Dictionary:
-	var queue: Array[Vector2i] = [start]
-	var distances: Dictionary = {start: 0}
-	var previous: Dictionary = {}
-	var index: int = 0
-
-	while index < queue.size():
-		var current: Vector2i = queue[index]
-		index += 1
-		var current_distance: int = distances[current]
-
-		for neighbor in connected_neighbors(cells, width, height, current):
-			if distances.has(neighbor):
-				continue
-			distances[neighbor] = current_distance + 1
-			previous[neighbor] = current
-			queue.append(neighbor)
-
-	return {
-		"distances": distances,
-		"previous": previous,
-	}
-
-
-static func _reconstruct_path(previous: Dictionary, start: Vector2i, goal: Vector2i) -> Array[Vector2i]:
-	var path: Array[Vector2i] = [goal]
-	var current: Vector2i = goal
-
-	while current != start and previous.has(current):
-		current = previous[current]
+	var path: Array[Vector2i] = []
+	var current: Vector2i = start
+	path.append(current)
+	while current != goal:
+		current += Vector2i.RIGHT if current.x < goal.x else Vector2i.LEFT
 		path.append(current)
 
-	path.reverse()
-	return path
+	var values: Array[PackedInt32Array] = _build_empty_values(width, height)
+	var path_lookup: Dictionary = {}
+	for cell in path:
+		path_lookup[cell] = true
+
+	for y in range(height):
+		for x in range(width):
+			var cell: Vector2i = Vector2i(x, y)
+			if cell == goal:
+				values[y][x] = 0
+			elif path_lookup.has(cell):
+				values[y][x] = clampi(2 + int(round(difficulty_scale * 1.6)) + ((x + y) % 2), 1, 9)
+			else:
+				values[y][x] = 1
+
+	var target_total: int = _sum_path_total(values, path, goal)
+	return {
+		"cell_values": values,
+		"start": start,
+		"goal": goal,
+		"target_total": target_total,
+		"solution_path": path,
+		"solution_length": max(path.size() - 1, 0),
+		"max_cell_value": _get_max_cell_value(difficulty_scale),
+	}
 
 
-static func _is_inside(cell: Vector2i, width: int, height: int) -> bool:
-	return cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height
+static func _pick_start_and_goal(width: int, height: int, rng: RandomNumberGenerator) -> Dictionary:
+	var minimum_distance: int = maxi(2, int(round(float(width + height) * 0.35)))
+	for _attempt in range(48):
+		var start: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
+		var goal: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
+		if goal == start:
+			continue
+		if _manhattan_distance(start, goal) < minimum_distance:
+			continue
+		return {
+			"start": start,
+			"goal": goal,
+		}
+	return {}
+
+
+static func _detour_budget(width: int, height: int, difficulty_scale: float) -> int:
+	var area: int = width * height
+	var raw_budget: int = clampi(2 + int(round(difficulty_scale * 2.0)) + int(round(float(area) / 10.0)), 2, maxi(2, area / 2))
+	if raw_budget % 2 != 0:
+		raw_budget -= 1
+	return maxi(raw_budget, 0)
+
+
+static func _find_random_path(width: int, height: int, start: Vector2i, goal: Vector2i, desired_moves: int, rng: RandomNumberGenerator) -> Array[Vector2i]:
+	for _attempt in range(MAX_PATH_SEARCH_ATTEMPTS):
+		var visited: Dictionary = {start: true}
+		var path: Array[Vector2i] = [start]
+		if _extend_path(width, height, goal, desired_moves, rng, path, visited):
+			return path
+	return []
+
+
+static func _extend_path(width: int, height: int, goal: Vector2i, desired_moves: int, rng: RandomNumberGenerator, path: Array[Vector2i], visited: Dictionary) -> bool:
+	var current: Vector2i = path[path.size() - 1]
+	var moves_used: int = path.size() - 1
+	if moves_used == desired_moves:
+		return current == goal
+
+	var remaining_moves: int = desired_moves - moves_used
+	var neighbors: Array[Vector2i] = orthogonal_neighbors(width, height, current)
+	for index in range(neighbors.size() - 1, 0, -1):
+		var swap_index: int = rng.randi_range(0, index)
+		var temp: Vector2i = neighbors[index]
+		neighbors[index] = neighbors[swap_index]
+		neighbors[swap_index] = temp
+
+	neighbors.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return _manhattan_distance(a, goal) < _manhattan_distance(b, goal)
+	)
+
+	for neighbor in neighbors:
+		if visited.has(neighbor):
+			continue
+
+		var distance_to_goal: int = _manhattan_distance(neighbor, goal)
+		if distance_to_goal > remaining_moves - 1:
+			continue
+		if ((remaining_moves - 1 - distance_to_goal) % 2) != 0:
+			continue
+
+		visited[neighbor] = true
+		path.append(neighbor)
+		if _extend_path(width, height, goal, desired_moves, rng, path, visited):
+			return true
+		path.pop_back()
+		visited.erase(neighbor)
+
+	return false
+
+
+static func _build_values(width: int, height: int, path: Array[Vector2i], goal: Vector2i, rng: RandomNumberGenerator, difficulty_scale: float) -> Array[PackedInt32Array]:
+	var values: Array[PackedInt32Array] = _build_empty_values(width, height)
+	var path_lookup: Dictionary = {}
+	for cell in path:
+		path_lookup[cell] = true
+
+	var max_value: int = _get_max_cell_value(difficulty_scale)
+	var off_path_max: int = maxi(2, max_value - 2)
+	var path_min: int = mini(max_value, maxi(2, 1 + int(floor(difficulty_scale * 1.2))))
+
+	for y in range(height):
+		for x in range(width):
+			var cell: Vector2i = Vector2i(x, y)
+			if cell == goal:
+				values[y][x] = 0
+			elif path_lookup.has(cell):
+				values[y][x] = rng.randi_range(path_min, max_value)
+			else:
+				values[y][x] = rng.randi_range(1, off_path_max)
+
+	return values
+
+
+static func _build_empty_values(width: int, height: int) -> Array[PackedInt32Array]:
+	var values: Array[PackedInt32Array] = []
+	for _y in range(height):
+		var row: PackedInt32Array = PackedInt32Array()
+		row.resize(width)
+		values.append(row)
+	return values
+
+
+static func _get_max_cell_value(difficulty_scale: float) -> int:
+	return clampi(4 + int(round(difficulty_scale * 2.1)), 5, 9)
+
+
+static func _sum_path_total(values: Array[PackedInt32Array], path: Array[Vector2i], goal: Vector2i) -> int:
+	var total: int = 0
+	for index in range(1, path.size()):
+		var cell: Vector2i = path[index]
+		if cell == goal:
+			continue
+		total += values[cell.y][cell.x]
+	return total
+
+
+static func _find_unique_optimal_solution(values: Array[PackedInt32Array], width: int, height: int, start: Vector2i, goal: Vector2i, target_total: int, desired_moves: int) -> Dictionary:
+	var current_states: Dictionary = {start: {0: 1}}
+
+	for step in range(1, desired_moves + 1):
+		var next_states: Dictionary = {}
+		for cell_variant in current_states.keys():
+			var cell: Vector2i = cell_variant
+			var totals: Dictionary = current_states[cell]
+			for neighbor in orthogonal_neighbors(width, height, cell):
+				var added_value: int = 0 if neighbor == goal else values[neighbor.y][neighbor.x]
+				if not next_states.has(neighbor):
+					next_states[neighbor] = {}
+				var destination_totals: Dictionary = next_states[neighbor]
+				for total_variant in totals.keys():
+					var current_total: int = int(total_variant)
+					var next_total: int = current_total + added_value
+					if next_total > target_total:
+						continue
+					var current_count: int = int(destination_totals.get(next_total, 0))
+					destination_totals[next_total] = mini(2, current_count + int(totals[total_variant]))
+
+		current_states = next_states
+		if not current_states.has(goal):
+			continue
+
+		var goal_totals: Dictionary = current_states[goal]
+		if not goal_totals.has(target_total):
+			continue
+
+		if int(goal_totals[target_total]) != 1:
+			return {}
+		if step != desired_moves:
+			return {}
+
+		var solved_path: Array[Vector2i] = _recover_solution_path(values, width, height, start, goal, target_total, step)
+		if solved_path.is_empty():
+			return {}
+
+		return {
+			"path": solved_path,
+			"steps": step,
+		}
+
+	return {}
+
+
+static func _recover_solution_path(values: Array[PackedInt32Array], width: int, height: int, start: Vector2i, goal: Vector2i, target_total: int, step_limit: int) -> Array[Vector2i]:
+	var path: Array[Vector2i] = [start]
+	if _search_solution_path(values, width, height, goal, target_total, step_limit, 0, path):
+		return path
+	return []
+
+
+static func _search_solution_path(values: Array[PackedInt32Array], width: int, height: int, goal: Vector2i, target_total: int, step_limit: int, running_total: int, path: Array[Vector2i]) -> bool:
+	var current: Vector2i = path[path.size() - 1]
+	var moves_used: int = path.size() - 1
+	if moves_used == step_limit:
+		return current == goal and running_total == target_total
+
+	var remaining_moves: int = step_limit - moves_used
+	for neighbor in orthogonal_neighbors(width, height, current):
+		var added_value: int = 0 if neighbor == goal else values[neighbor.y][neighbor.x]
+		var next_total: int = running_total + added_value
+		if next_total > target_total:
+			continue
+		var distance_to_goal: int = _manhattan_distance(neighbor, goal)
+		if distance_to_goal > remaining_moves - 1:
+			continue
+		if distance_to_goal == 0 and next_total != target_total and remaining_moves == 1:
+			continue
+
+		path.append(neighbor)
+		if _search_solution_path(values, width, height, goal, target_total, step_limit, next_total, path):
+			return true
+		path.pop_back()
+
+	return false
+
+
+static func _manhattan_distance(a: Vector2i, b: Vector2i) -> int:
+	return absi(a.x - b.x) + absi(a.y - b.y)

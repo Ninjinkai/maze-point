@@ -141,6 +141,7 @@ var splash_best_label: Label
 var splash_stars_label: Label
 var advance_timer: Timer
 var ui_font: Font
+var company_logo_texture: Texture2D
 var audio_controller
 
 
@@ -1175,10 +1176,13 @@ func _make_splash_stat_label() -> Label:
 
 
 func _load_company_logo_texture() -> Texture2D:
+	if company_logo_texture != null:
+		return company_logo_texture
 	var image: Image = Image.new()
 	if image.load(ProjectSettings.globalize_path(COMPANY_LOGO_PATH)) != OK:
 		return null
-	return ImageTexture.create_from_image(image)
+	company_logo_texture = ImageTexture.create_from_image(image)
+	return company_logo_texture
 
 
 func _set_hud_visible(is_visible: bool) -> void:

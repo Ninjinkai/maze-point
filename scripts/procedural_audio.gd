@@ -52,11 +52,6 @@ func start_run_music(run_seed: int) -> void:
 		return
 	_update_music_stream(run_seed)
 
-
-func update_level_music(level: int, level_seed: int) -> void:
-	start_run_music(level_seed)
-
-
 func sync_music_state(level: int, retries: int, player_total: int, goal_target: int, is_splash: bool, is_complete: bool) -> void:
 	if not audio_enabled or music_player == null:
 		return
@@ -96,15 +91,6 @@ func get_sfx_volume() -> float:
 
 func play_move() -> void:
 	_play_sfx("move")
-
-
-func play_goal() -> void:
-	play_success()
-
-
-func play_timeout() -> void:
-	play_failure()
-
 
 func play_success() -> void:
 	_play_sfx("success")

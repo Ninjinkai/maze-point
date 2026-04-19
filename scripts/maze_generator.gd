@@ -60,6 +60,8 @@ static func _build_candidate(width: int, height: int, rng: RandomNumberGenerator
 		var intended_path: Array[Vector2i] = _find_random_path(width, height, start, goal, desired_moves, rng)
 		if intended_path.is_empty():
 			continue
+		if not _path_has_shape_variety(intended_path, start, goal):
+			continue
 
 		var values: Array[PackedInt32Array] = _build_values(width, height, intended_path, goal, rng, difficulty_scale)
 		var target_total: int = _sum_path_total(values, intended_path, goal)
@@ -125,27 +127,34 @@ static func _build_fallback_candidate(width: int, height: int, rng: RandomNumber
 
 static func _pick_start_and_goal(width: int, height: int, rng: RandomNumberGenerator) -> Dictionary:
 	var max_distance: int = width + height - 2
-	var minimum_distance: int = maxi(3, int(round(float(max_distance) * 0.62)))
+	var minimum_distance: int = maxi(4, int(round(float(max_distance) * 0.68)))
 	var best_start: Vector2i = Vector2i.ZERO
 	var best_goal: Vector2i = Vector2i.ZERO
-	var best_distance: int = -1
+	var best_score: float = -1.0
 	for _attempt in range(64):
 		var start: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
 		var goal: Vector2i = Vector2i(rng.randi_range(0, width - 1), rng.randi_range(0, height - 1))
 		if goal == start:
 			continue
-		var distance: int = _manhattan_distance(start, goal)
-		if distance > best_distance:
-			best_distance = distance
+		var delta_x: int = absi(start.x - goal.x)
+		var delta_y: int = absi(start.y - goal.y)
+		var distance: int = delta_x + delta_y
+		var balance_bonus: float = float(mini(delta_x, delta_y)) * 2.2
+		var axis_penalty: float = 2.8 if delta_x == 0 or delta_y == 0 else 0.0
+		var score: float = float(distance) * 2.0 + balance_bonus - axis_penalty
+		if score > best_score:
+			best_score = score
 			best_start = start
 			best_goal = goal
 		if distance < minimum_distance:
+			continue
+		if delta_x == 0 or delta_y == 0:
 			continue
 		return {
 			"start": start,
 			"goal": goal,
 		}
-	if best_distance >= 2:
+	if best_score >= 2.0:
 		return {
 			"start": best_start,
 			"goal": best_goal,
@@ -184,8 +193,14 @@ static func _extend_path(width: int, height: int, goal: Vector2i, desired_moves:
 		neighbors[index] = neighbors[swap_index]
 		neighbors[swap_index] = temp
 
+	var previous_direction: Vector2i = Vector2i.ZERO
+	if path.size() >= 2:
+		previous_direction = current - path[path.size() - 2]
+
 	neighbors.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		return _manhattan_distance(a, goal) < _manhattan_distance(b, goal)
+		var a_score: float = _score_path_neighbor(a, current, goal, previous_direction, remaining_moves, width, height)
+		var b_score: float = _score_path_neighbor(b, current, goal, previous_direction, remaining_moves, width, height)
+		return a_score > b_score
 	)
 
 	for neighbor in neighbors:
@@ -206,6 +221,66 @@ static func _extend_path(width: int, height: int, goal: Vector2i, desired_moves:
 		visited.erase(neighbor)
 
 	return false
+
+
+static func _score_path_neighbor(neighbor: Vector2i, current: Vector2i, goal: Vector2i, previous_direction: Vector2i, remaining_moves: int, width: int, height: int) -> float:
+	var next_direction: Vector2i = neighbor - current
+	var distance_score: float = float(width + height - _manhattan_distance(neighbor, goal)) * 2.6
+	var turn_bonus: float = 0.0
+	if previous_direction != Vector2i.ZERO and next_direction != previous_direction:
+		turn_bonus = 3.8
+	elif previous_direction != Vector2i.ZERO:
+		turn_bonus = -1.4
+	var center: Vector2 = Vector2((width - 1) * 0.5, (height - 1) * 0.5)
+	var center_distance: float = Vector2(neighbor).distance_to(center)
+	var center_bonus: float = maxf(0.0, 2.4 - center_distance * 0.55)
+	var flexibility_bonus: float = float(orthogonal_neighbors(width, height, neighbor).size()) * 0.35
+	var detour_bonus: float = clampf(float(remaining_moves - _manhattan_distance(neighbor, goal)), 0.0, 8.0) * 0.12
+	return distance_score + turn_bonus + center_bonus + flexibility_bonus + detour_bonus
+
+
+static func _path_has_shape_variety(path: Array[Vector2i], start: Vector2i, goal: Vector2i) -> bool:
+	var move_count: int = max(path.size() - 1, 0)
+	if move_count <= 2:
+		return true
+	var delta_x: int = absi(start.x - goal.x)
+	var delta_y: int = absi(start.y - goal.y)
+	var turn_count: int = _count_path_turns(path)
+	var minimum_turns: int = 1 if move_count >= 4 else 0
+	if move_count >= 7:
+		minimum_turns = 2
+	if mini(delta_x, delta_y) >= 2:
+		minimum_turns = maxi(minimum_turns, 2)
+	var longest_straight_run: int = _get_longest_straight_run(path)
+	var straight_run_limit: int = maxi(3, int(ceili(float(move_count) * 0.45)))
+	if move_count >= 8:
+		straight_run_limit = mini(straight_run_limit, 4)
+	return turn_count >= minimum_turns and longest_straight_run <= straight_run_limit
+
+
+static func _count_path_turns(path: Array[Vector2i]) -> int:
+	var turns: int = 0
+	for index in range(2, path.size()):
+		var previous_direction: Vector2i = path[index - 1] - path[index - 2]
+		var next_direction: Vector2i = path[index] - path[index - 1]
+		if previous_direction != next_direction:
+			turns += 1
+	return turns
+
+
+static func _get_longest_straight_run(path: Array[Vector2i]) -> int:
+	var longest_run: int = 1
+	var current_run: int = 1
+	var previous_direction: Vector2i = Vector2i.ZERO
+	for index in range(1, path.size()):
+		var direction: Vector2i = path[index] - path[index - 1]
+		if index == 1 or direction == previous_direction:
+			current_run += 1
+		else:
+			current_run = 2
+		previous_direction = direction
+		longest_run = maxi(longest_run, current_run)
+	return longest_run - 1
 
 
 static func _build_values(width: int, height: int, path: Array[Vector2i], goal: Vector2i, rng: RandomNumberGenerator, difficulty_scale: float) -> Array[PackedInt32Array]:

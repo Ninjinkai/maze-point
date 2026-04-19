@@ -4,7 +4,7 @@ Maze Point is a colorful number-path puzzle built with Godot. Every level is a p
 
 ## How to play
 
-The game opens on a title screen before the first run begins.
+The game opens on a title screen before the first run begins, with language and audio controls available before play.
 
 Start anywhere the level places you and reach the goal with the **exact target total** shown on the goal cell.
 
@@ -27,7 +27,7 @@ Rules:
 - Clearing a level lets you **continue**, **retry the same level**, or **end the run**.
 - Retry keeps the **same grid layout and music** for that level.
 - Start and goal positions are pushed far apart to encourage crossing and exploring the full board.
-- New levels increase difficulty gradually with larger grids and higher target totals.
+- New levels increase difficulty gradually with smoother board-size steps, steadier shape changes, and more varied intended solution routes.
 - Clears are rated from **1 to 3 stars** based on how close your route stayed to the optimal path.
 - Each run keeps a single evolving procedurally generated music theme.
 - The end-of-run screen includes a final star score based on stars earned, levels cleared, and total resets.
@@ -39,8 +39,8 @@ Rules:
 - **End run:** `E` or gamepad `B`
 - **Invert colors:** `I` or gamepad `X`
 - **Pause menu:** `Esc` or gamepad `Start`
-- **Pause controls:** the pause menu includes separate music and SFX volume sliders.
-- **Saved preferences:** music volume, SFX volume, and color inversion persist between launches.
+- **Title and pause controls:** both menus include separate music and SFX volume sliders, and both let you cycle the active language.
+- **Saved preferences:** language, music volume, SFX volume, and color inversion persist between launches.
 - **Menu navigation:** arrow keys or gamepad **D-pad**
 
 ## Audio
@@ -52,6 +52,11 @@ All music and sound effects are generated in code at runtime.
 - The music shifts its energy as the run state changes.
 - Movement, goal clear, failure, menu navigation, restart, and palette inversion all have synthesized cues.
 - The best run score is saved locally and shown on the title screen and pause menu.
+
+## Localization
+
+- Maze Point includes built-in UI localization for English, Simplified Chinese, Hindi, Spanish, Arabic, French, Brazilian Portuguese, German, Japanese, and Korean.
+- Language selection is available from the title screen before a run starts and again from the pause menu mid-run.
 
 ## Running locally
 

@@ -450,19 +450,24 @@ func _build_restart_stream() -> AudioStreamWAV:
 
 
 func _build_player_entry_stream() -> AudioStreamWAV:
-	var duration: float = 0.38
+	var duration: float = 0.46
 	var total_frames: int = int(round(duration * SAMPLE_RATE))
 	var data: PackedByteArray = PackedByteArray()
 	data.resize(total_frames * 2)
 	for frame in range(total_frames):
 		var progress: float = float(frame) / float(maxi(total_frames - 1, 1))
 		var time: float = float(frame) / SAMPLE_RATE
-		var env: float = sin(progress * PI)
-		env *= env
-		var freq: float = lerpf(180.0, 690.0, pow(progress, 0.72))
-		var shimmer: float = _sine_wave(time * freq * 1.5) * 0.16
-		var sample: float = (_triangle_wave(time * freq) * 0.52 + _sine_wave(time * freq * 0.5) * 0.22 + shimmer) * env
-		data.encode_s16(frame * 2, int(round(clampf(sample * 0.68, -1.0, 1.0) * 32767.0)))
+		var primary_env: float = sin(clampf(progress / 0.74, 0.0, 1.0) * PI)
+		primary_env *= primary_env
+		var bounce_env: float = sin(clampf((progress - 0.36) / 0.48, 0.0, 1.0) * PI)
+		bounce_env *= bounce_env
+		var env: float = primary_env * 0.82 + bounce_env * 0.42
+		var freq: float = lerpf(170.0, 760.0, pow(progress, 0.68))
+		var bounce_freq: float = lerpf(360.0, 540.0, clampf((progress - 0.34) / 0.52, 0.0, 1.0))
+		var shimmer: float = _sine_wave(time * freq * 1.5) * 0.14
+		var bounce_layer: float = (_triangle_wave(time * bounce_freq) * 0.3 + _sine_wave(time * bounce_freq * 0.5) * 0.14) * bounce_env
+		var sample: float = (_triangle_wave(time * freq) * 0.48 + _sine_wave(time * freq * 0.5) * 0.2 + shimmer + bounce_layer) * env
+		data.encode_s16(frame * 2, int(round(clampf(sample * 0.72, -1.0, 1.0) * 32767.0)))
 	return _make_wav_stream(data)
 
 

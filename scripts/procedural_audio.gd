@@ -5,6 +5,7 @@ const SAMPLE_RATE := 22050
 const SFX_POOL_SIZE := 6
 const AudioMathScript = preload("res://scripts/audio/audio_math.gd")
 const AudioStreamFactoryScript = preload("res://scripts/audio/audio_stream_factory.gd")
+const AudioMusicStyleLibraryScript = preload("res://scripts/audio/audio_music_style_library.gd")
 
 var audio_enabled: bool = true
 var music_player: AudioStreamPlayer
@@ -187,45 +188,24 @@ func _update_music_stream(run_seed: int) -> void:
 func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = maxi(run_seed, 1)
-	var style_id: int = int(abs(run_seed) % 5)
-	var bpm_ranges: Array = [[88.0, 102.0], [96.0, 112.0], [104.0, 118.0], [90.0, 106.0], [110.0, 126.0]]
-	var steps_per_bar_options: Array[int] = [16, 16, 12, 16, 8]
-	var bar_options: Array[int] = [8, 8, 9, 7, 10]
-	var root_ranges: Array = [[41, 49], [46, 54], [48, 57], [38, 45], [50, 58]]
-	var mode_options: Array = [
-		[[0, 2, 4, 7, 9, 11], [0, 4, 7, 9, 11, 14], [0, 2, 5, 7, 9, 12]],
-		[[0, 3, 5, 7, 10, 12], [0, 2, 3, 7, 8, 10], [0, 3, 5, 8, 10, 12]],
-		[[0, 2, 5, 7, 9, 12], [0, 4, 7, 9, 12, 14], [0, 2, 4, 7, 11, 14]],
-		[[0, 1, 5, 7, 8, 12], [0, 3, 5, 6, 10, 12], [0, 2, 5, 7, 8, 11]],
-		[[0, 2, 4, 7, 9, 12], [0, 2, 5, 7, 10, 12], [0, 4, 7, 9, 11, 12]],
-	]
-	var chord_options: Array = [
-		[[0, 5, 3, 4], [0, 3, 5, 2], [0, 4, 1, 5]],
-		[[0, 6, 5, 3], [0, 3, 1, 4], [0, 5, 4, 2]],
-		[[0, 4, 5, 3], [0, 2, 5, 4], [0, 5, 1, 4]],
-		[[0, 1, 5, 4], [0, 3, 2, 6], [0, 4, 1, 3]],
-		[[0, 4, 1, 5], [0, 5, 3, 4], [0, 2, 4, 5]],
-	]
-	var bpm_range: Array = bpm_ranges[style_id]
-	var bpm: float = rng.randf_range(float(bpm_range[0]), float(bpm_range[1]))
-	var steps_per_bar: int = steps_per_bar_options[style_id]
-	var bars: int = bar_options[style_id]
-	var pulses_per_beat: float = 3.0 if style_id == 2 else 4.0
+	var style = AudioMusicStyleLibraryScript.from_run_seed(run_seed)
+	var style_id: int = style.style_id
+	var bpm: float = style.pick_bpm(rng)
+	var steps_per_bar: int = style.steps_per_bar
+	var bars: int = style.bars
+	var pulses_per_beat: float = style.get_pulses_per_beat()
 	var step_duration: float = 60.0 / bpm / pulses_per_beat
 	var total_duration: float = step_duration * float(steps_per_bar * bars)
 	var total_frames: int = maxi(1, int(round(total_duration * SAMPLE_RATE)))
-	var root_range: Array = root_ranges[style_id]
-	var root_note: int = rng.randi_range(int(root_range[0]), int(root_range[1]))
-	var mode_choices: Array = mode_options[style_id]
-	var chord_choices: Array = chord_options[style_id]
-	var mode: Array = mode_choices[rng.randi_range(0, mode_choices.size() - 1)]
-	var chord_pattern: Array = chord_choices[rng.randi_range(0, chord_choices.size() - 1)]
+	var root_note: int = style.pick_root_note(rng)
+	var mode: Array = style.pick_mode(rng)
+	var chord_pattern: Array = style.pick_chord_pattern(rng)
 	var lead_pattern: Array[int] = []
 	var bass_pattern: Array[int] = []
 	var counter_pattern: Array[int] = []
 	var total_steps: int = steps_per_bar * bars
-	var rest_chance: float = [0.14, 0.08, 0.18, 0.16, 0.1][style_id]
-	var accent_jump_chance: float = [0.1, 0.2, 0.12, 0.08, 0.16][style_id]
+	var rest_chance: float = style.rest_chance
+	var accent_jump_chance: float = style.accent_jump_chance
 	for index in range(total_steps):
 		var chord_span: int = 4 if steps_per_bar >= 16 else 3
 		var chord_offset: int = int(chord_pattern[int(floor(float(index % steps_per_bar) / chord_span)) % chord_pattern.size()])
@@ -240,7 +220,7 @@ func _build_music_stream(run_seed: int) -> AudioStreamWAV:
 		else:
 			lead_pattern.append(lead_offset)
 		if index % 2 == 0:
-			bass_pattern.append(chord_offset - 12 + ([0, 0, 5, -5, 3][style_id]))
+			bass_pattern.append(chord_offset - 12 + style.bass_offset)
 		if index % 2 == (0 if style_id != 3 else 1):
 			counter_pattern.append(chord_offset + int(mode[(index + 2) % mode.size()]) + (12 if style_id == 1 else 0))
 		else:

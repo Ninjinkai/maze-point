@@ -6,6 +6,8 @@ const LocalizationScript = preload("res://scripts/localization_data.gd")
 const ProgressionScript = preload("res://scripts/game/game_progression.gd")
 const InputScript = preload("res://scripts/game/game_input.gd")
 const PersistenceScript = preload("res://scripts/game/game_persistence.gd")
+const TypesScript = preload("res://scripts/game/game_types.gd")
+const PlayfieldUtilsScript = preload("res://scripts/game/game_playfield_utils.gd")
 const UiStylesScript = preload("res://scripts/game/game_ui_styles.gd")
 const RendererScript = preload("res://scripts/game/game_renderer.gd")
 const COMPANY_LOGO_PATH := "res://assets/branding/SlopwAIr_logo_vector.png"
@@ -44,27 +46,6 @@ const ACTION_END_RUN := "maze_end_run"
 const ACTION_INVERT := "maze_invert"
 const ACTION_PAUSE := "maze_pause"
 
-enum SplashMode {
-	NONE,
-	TITLE,
-	PAUSED,
-	LEVEL_COMPLETE,
-	LEVEL_FAILED,
-	RUN_COMPLETE,
-}
-
-enum GoalResolveOutcome {
-	NONE,
-	SUCCESS,
-	FAILURE,
-}
-
-enum TransitionAction {
-	NONE,
-	START_RUN,
-	NEXT_LEVEL,
-}
-
 var run_seed: int = 0
 var level: int = 1
 var grid_width: int = 0
@@ -93,12 +74,12 @@ var goal_clear_elapsed: float = GOAL_CLEAR_DURATION
 var goal_fail_elapsed: float = GOAL_FAIL_DURATION
 var move_animation_from: Vector2 = Vector2.ZERO
 var move_animation_to: Vector2 = Vector2.ZERO
-var pending_goal_outcome: GoalResolveOutcome = GoalResolveOutcome.NONE
+var pending_goal_outcome: int = TypesScript.GoalResolveOutcome.NONE
 var joypad_x_state: int = 0
 var joypad_y_state: int = 0
 var run_total_score: int = 0
 var run_levels_cleared: int = 0
-var splash_mode: SplashMode = SplashMode.NONE
+var splash_mode: int = TypesScript.SplashMode.NONE
 var last_viewport_size: Vector2 = Vector2.ZERO
 var invert_colors_enabled: bool = false
 var menu_focus_index: int = -1
@@ -173,7 +154,7 @@ var audio_controller
 var renderer := RendererScript.new()
 var content_fade_elapsed: float = CONTENT_FADE_DURATION
 var content_fade_direction: int = 0
-var pending_transition_action: TransitionAction = TransitionAction.NONE
+var pending_transition_action: int = TypesScript.TransitionAction.NONE
 
 
 func _ready() -> void:
@@ -200,7 +181,7 @@ func _process(delta: float) -> void:
 	if _is_content_fade_active():
 		content_fade_elapsed = minf(content_fade_elapsed + delta, CONTENT_FADE_DURATION)
 		if not _is_content_fade_active():
-			if content_fade_direction > 0 and pending_transition_action != TransitionAction.NONE:
+			if content_fade_direction > 0 and pending_transition_action != TypesScript.TransitionAction.NONE:
 				_perform_pending_transition_action()
 			else:
 				content_fade_direction = 0
@@ -210,18 +191,18 @@ func _process(delta: float) -> void:
 		last_viewport_size = viewport_size
 		_refresh_ui_layout()
 
-	if splash_mode == SplashMode.NONE and not completed:
+	if splash_mode == TypesScript.SplashMode.NONE and not completed:
 		if _is_marker_intro_active():
 			marker_intro_elapsed = minf(marker_intro_elapsed + delta, MARKER_INTRO_DURATION)
 
-		if splash_mode != SplashMode.NONE or completed:
+		if splash_mode != TypesScript.SplashMode.NONE or completed:
 			_update_ui()
 			queue_redraw()
 			return
 
 		if _is_move_animation_active():
 			move_animation_elapsed = minf(move_animation_elapsed + delta, MOVE_ANIMATION_DURATION)
-			if not _is_move_animation_active() and pending_goal_outcome != GoalResolveOutcome.NONE:
+			if not _is_move_animation_active() and pending_goal_outcome != TypesScript.GoalResolveOutcome.NONE:
 				_begin_goal_resolution()
 		elif _is_goal_clear_active():
 			goal_clear_elapsed = minf(goal_clear_elapsed + delta, GOAL_CLEAR_DURATION)
@@ -247,10 +228,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _is_content_fade_active():
 			return
-		if splash_mode == SplashMode.NONE and _has_active_animation():
+		if splash_mode == TypesScript.SplashMode.NONE and _has_active_animation():
 			_skip_active_animations()
 			return
-		if splash_mode != SplashMode.NONE:
+		if splash_mode != TypesScript.SplashMode.NONE:
 			_activate_focused_menu_button()
 		return
 
@@ -259,13 +240,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _is_content_fade_active():
 			return
-		if splash_mode == SplashMode.PAUSED:
+		if splash_mode == TypesScript.SplashMode.PAUSED:
 			_resume_from_pause()
-		elif splash_mode == SplashMode.NONE and not completed:
+		elif splash_mode == TypesScript.SplashMode.NONE and not completed:
 			_show_pause_menu()
 		return
 
-	if event.is_action_pressed(ACTION_RETRY) and (splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED):
+	if event.is_action_pressed(ACTION_RETRY) and (splash_mode == TypesScript.SplashMode.LEVEL_COMPLETE or splash_mode == TypesScript.SplashMode.LEVEL_FAILED):
 		if _is_loading_transition_active():
 			return
 		if _is_content_fade_active():
@@ -273,7 +254,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_handle_splash_retry()
 		return
 
-	if event.is_action_pressed(ACTION_END_RUN) and (splash_mode == SplashMode.LEVEL_COMPLETE or splash_mode == SplashMode.LEVEL_FAILED):
+	if event.is_action_pressed(ACTION_END_RUN) and (splash_mode == TypesScript.SplashMode.LEVEL_COMPLETE or splash_mode == TypesScript.SplashMode.LEVEL_FAILED):
 		if _is_loading_transition_active():
 			return
 		if _is_content_fade_active():
@@ -293,7 +274,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _handle_menu_navigation_input(event):
 			return
 
-	if splash_mode != SplashMode.NONE or completed:
+	if splash_mode != TypesScript.SplashMode.NONE or completed:
 		return
 
 	if _is_loading_transition_active():
@@ -304,7 +285,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _is_skip_input_event(event):
 		var skip_movement_intro: bool = _is_marker_intro_active() and _is_movement_input_event(event)
 		_skip_active_animations()
-		if splash_mode != SplashMode.NONE or completed:
+		if splash_mode != TypesScript.SplashMode.NONE or completed:
 			return
 		if _is_marker_intro_active() and not skip_movement_intro:
 			return
@@ -415,9 +396,9 @@ func _generate_level_internal(reuse_current_profile: bool = false, hide_splash_b
 	player_total_bounce_elapsed = PLAYER_TOTAL_BOUNCE_DURATION
 	goal_clear_elapsed = GOAL_CLEAR_DURATION
 	goal_fail_elapsed = GOAL_FAIL_DURATION
-	pending_goal_outcome = GoalResolveOutcome.NONE
+	pending_goal_outcome = TypesScript.GoalResolveOutcome.NONE
 	if hide_splash_before_generate:
-		splash_mode = SplashMode.NONE
+		splash_mode = TypesScript.SplashMode.NONE
 		_set_footer_enabled(true)
 		_set_splash_visible(false)
 
@@ -432,17 +413,17 @@ func _generate_level_internal(reuse_current_profile: bool = false, hide_splash_b
 
 	_apply_palette(level)
 
-	var puzzle: Dictionary = MazeGeneratorScript.generate(grid_width, grid_height, level_seed, current_level_difficulty_scale)
-	cell_values = puzzle["cell_values"]
-	start_cell = puzzle["start"]
-	goal_cell = puzzle["goal"]
+	var puzzle = MazeGeneratorScript.generate(grid_width, grid_height, level_seed, current_level_difficulty_scale)
+	cell_values = puzzle.cell_values
+	start_cell = puzzle.start
+	goal_cell = puzzle.goal
 	player_cell = start_cell
 	move_animation_from = Vector2(player_cell)
 	move_animation_to = Vector2(player_cell)
-	solution_path = puzzle["solution_path"]
-	optimal_steps = puzzle["solution_length"]
-	goal_target = puzzle["target_total"]
-	max_cell_value = int(puzzle.get("max_cell_value", 9))
+	solution_path = puzzle.solution_path
+	optimal_steps = puzzle.solution_length
+	goal_target = puzzle.target_total
+	max_cell_value = puzzle.max_cell_value
 	player_total = 0
 	player_steps = 0
 	_rebuild_tile_value_colors()
@@ -451,7 +432,7 @@ func _generate_level_internal(reuse_current_profile: bool = false, hide_splash_b
 		audio_controller.play_player_entry()
 		_sync_music_state()
 
-	splash_mode = SplashMode.NONE
+	splash_mode = TypesScript.SplashMode.NONE
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
 	_update_ui()
@@ -516,17 +497,17 @@ func _move_player_to(target_cell: Vector2i) -> void:
 
 
 func _complete_level() -> void:
-	_queue_goal_resolution(GoalResolveOutcome.SUCCESS)
+	_queue_goal_resolution(TypesScript.GoalResolveOutcome.SUCCESS)
 
 
 func _resolve_goal_reached() -> void:
 	if player_total == goal_target:
 		_complete_level()
 		return
-	_queue_goal_resolution(GoalResolveOutcome.FAILURE)
+	_queue_goal_resolution(TypesScript.GoalResolveOutcome.FAILURE)
 
 
-func _queue_goal_resolution(outcome: GoalResolveOutcome) -> void:
+func _queue_goal_resolution(outcome: int) -> void:
 	pending_goal_outcome = outcome
 	if not _is_move_animation_active():
 		_begin_goal_resolution()
@@ -534,25 +515,25 @@ func _queue_goal_resolution(outcome: GoalResolveOutcome) -> void:
 
 func _begin_goal_resolution() -> void:
 	match pending_goal_outcome:
-		GoalResolveOutcome.SUCCESS:
+		TypesScript.GoalResolveOutcome.SUCCESS:
 			goal_clear_elapsed = 0.0
 			goal_fail_elapsed = GOAL_FAIL_DURATION
 			if audio_controller != null:
 				audio_controller.play_success()
-		GoalResolveOutcome.FAILURE:
+		TypesScript.GoalResolveOutcome.FAILURE:
 			goal_fail_elapsed = 0.0
 			goal_clear_elapsed = GOAL_CLEAR_DURATION
 			if audio_controller != null:
 				audio_controller.play_failure()
 		_:
 			return
-	pending_goal_outcome = GoalResolveOutcome.NONE
+	pending_goal_outcome = TypesScript.GoalResolveOutcome.NONE
 	_sync_music_state()
 
 
 func _finish_level_complete() -> void:
 	completed = true
-	splash_mode = SplashMode.LEVEL_COMPLETE
+	splash_mode = TypesScript.SplashMode.LEVEL_COMPLETE
 	_record_level_result(true)
 	run_total_score = ProgressionScript.saturating_add(run_total_score, _calculate_star_rating(), MAX_TRACKED_VALUE)
 	run_levels_cleared = ProgressionScript.saturating_add(run_levels_cleared, 1, MAX_TRACKED_VALUE)
@@ -568,7 +549,7 @@ func _finish_level_failed() -> void:
 
 
 func _advance_to_next_level() -> void:
-	if splash_mode != SplashMode.LEVEL_COMPLETE:
+	if splash_mode != TypesScript.SplashMode.LEVEL_COMPLETE:
 		return
 	level = ProgressionScript.saturating_add(level, 1, MAX_TRACKED_VALUE)
 	level_retries = 0
@@ -624,7 +605,7 @@ func _update_completion_splash() -> void:
 
 func _show_failure_splash() -> void:
 	_apply_ui_metrics()
-	splash_mode = SplashMode.LEVEL_FAILED
+	splash_mode = TypesScript.SplashMode.LEVEL_FAILED
 	completed = true
 	_set_footer_enabled(false)
 	splash_title_label.text = _loc("TRY_AGAIN")
@@ -664,7 +645,7 @@ func _show_failure_splash() -> void:
 func _show_run_complete_splash() -> void:
 	var final_score: int = _calculate_final_run_score()
 	_remember_best_run_score(final_score)
-	splash_mode = SplashMode.RUN_COMPLETE
+	splash_mode = TypesScript.SplashMode.RUN_COMPLETE
 	completed = true
 	_set_footer_enabled(false)
 	splash_title_label.text = _loc("RUN_OVER")
@@ -707,10 +688,10 @@ func _show_run_complete_splash() -> void:
 func _show_pause_menu() -> void:
 	if completed:
 		return
-	if splash_mode != SplashMode.NONE and splash_mode != SplashMode.PAUSED:
+	if splash_mode != TypesScript.SplashMode.NONE and splash_mode != TypesScript.SplashMode.PAUSED:
 		return
 	_apply_ui_metrics()
-	splash_mode = SplashMode.PAUSED
+	splash_mode = TypesScript.SplashMode.PAUSED
 	_set_footer_enabled(false)
 	splash_title_label.text = _loc("PAUSED")
 	splash_score_label.text = _loc("TOTAL_MOVES") % [player_total, goal_target, player_steps]
@@ -749,9 +730,9 @@ func _show_pause_menu() -> void:
 
 
 func _resume_from_pause() -> void:
-	if splash_mode != SplashMode.PAUSED:
+	if splash_mode != TypesScript.SplashMode.PAUSED:
 		return
-	splash_mode = SplashMode.NONE
+	splash_mode = TypesScript.SplashMode.NONE
 	_set_footer_enabled(true)
 	_set_splash_visible(false)
 	_update_ui()
@@ -760,7 +741,7 @@ func _resume_from_pause() -> void:
 
 func _show_title_screen() -> void:
 	_apply_ui_metrics()
-	splash_mode = SplashMode.TITLE
+	splash_mode = TypesScript.SplashMode.TITLE
 	completed = true
 	title_loading_active = false
 	if loading_timer != null:
@@ -811,7 +792,7 @@ func _record_level_result(was_successful: bool) -> void:
 func _sync_music_state() -> void:
 	if audio_controller == null:
 		return
-	audio_controller.sync_music_state(level, level_retries, player_total, goal_target, splash_mode != SplashMode.NONE, splash_mode == SplashMode.LEVEL_COMPLETE)
+	audio_controller.sync_music_state(level, level_retries, player_total, goal_target, splash_mode != TypesScript.SplashMode.NONE, splash_mode == TypesScript.SplashMode.LEVEL_COMPLETE)
 
 
 func _calculate_star_rating() -> int:
@@ -881,36 +862,29 @@ func _handle_joypad_axis(value: float, is_horizontal: bool) -> void:
 
 
 func _get_draw_area() -> Rect2:
-	var viewport_size: Vector2 = get_viewport_rect().size
-	return Rect2(
-		Vector2(_get_outer_margin(), _get_top_hud_height()),
-		viewport_size - Vector2(_get_outer_margin() * 2.0, _get_top_hud_height() + _get_bottom_hud_height())
-	)
+	return PlayfieldUtilsScript.get_draw_area(get_viewport_rect().size, _get_outer_margin(), _get_top_hud_height(), _get_bottom_hud_height())
 
 
 func _get_cell_size() -> float:
-	var draw_area: Rect2 = _get_draw_area()
-	return minf(draw_area.size.x / float(grid_width), draw_area.size.y / float(grid_height))
+	return PlayfieldUtilsScript.get_cell_size(_get_draw_area(), grid_width, grid_height)
 
 
 func _get_grid_origin(cell_size: float) -> Vector2:
-	var draw_area: Rect2 = _get_draw_area()
-	var grid_size: Vector2 = Vector2(grid_width, grid_height) * cell_size
-	return draw_area.position + (draw_area.size - grid_size) * 0.5
+	return PlayfieldUtilsScript.get_grid_origin(_get_draw_area(), grid_width, grid_height, cell_size)
 
 
 func _cell_to_screen(cell: Vector2i) -> Vector2:
 	var cell_size: float = _get_cell_size()
-	return _get_grid_origin(cell_size) + (Vector2(cell.x, cell.y) + Vector2.ONE * 0.5) * cell_size
+	return PlayfieldUtilsScript.cell_to_screen(_get_grid_origin(cell_size), cell_size, Vector2(cell))
 
 
 func _cell_vector_to_screen(cell: Vector2) -> Vector2:
 	var cell_size: float = _get_cell_size()
-	return _get_grid_origin(cell_size) + (cell + Vector2.ONE * 0.5) * cell_size
+	return PlayfieldUtilsScript.cell_to_screen(_get_grid_origin(cell_size), cell_size, cell)
 
 
 func _get_tap_radius() -> float:
-	return maxf(_get_cell_size() * 0.42, 34.0)
+	return PlayfieldUtilsScript.get_tap_radius(_get_cell_size())
 
 
 func _build_ui() -> void:
@@ -1130,39 +1104,39 @@ func _handle_splash_action() -> void:
 	if audio_controller != null:
 		audio_controller.play_menu_confirm()
 	match splash_mode:
-		SplashMode.TITLE:
-			_begin_content_fade(TransitionAction.START_RUN)
-		SplashMode.PAUSED:
+		TypesScript.SplashMode.TITLE:
+			_begin_content_fade(TypesScript.TransitionAction.START_RUN)
+		TypesScript.SplashMode.PAUSED:
 			_resume_from_pause()
-		SplashMode.LEVEL_COMPLETE:
-			_begin_content_fade(TransitionAction.NEXT_LEVEL)
-		SplashMode.LEVEL_FAILED:
+		TypesScript.SplashMode.LEVEL_COMPLETE:
+			_begin_content_fade(TypesScript.TransitionAction.NEXT_LEVEL)
+		TypesScript.SplashMode.LEVEL_FAILED:
 			_restart_level()
-		SplashMode.RUN_COMPLETE:
-			_begin_content_fade(TransitionAction.START_RUN)
+		TypesScript.SplashMode.RUN_COMPLETE:
+			_begin_content_fade(TypesScript.TransitionAction.START_RUN)
 
 
 func _handle_splash_retry() -> void:
 	if _is_content_fade_active():
 		return
-	if splash_mode == SplashMode.PAUSED:
-		splash_mode = SplashMode.NONE
+	if splash_mode == TypesScript.SplashMode.PAUSED:
+		splash_mode = TypesScript.SplashMode.NONE
 		completed = false
 		_restart_level()
 		return
 
-	if splash_mode == SplashMode.LEVEL_FAILED:
-		splash_mode = SplashMode.NONE
+	if splash_mode == TypesScript.SplashMode.LEVEL_FAILED:
+		splash_mode = TypesScript.SplashMode.NONE
 		completed = false
 		_restart_level()
 		return
 
-	if splash_mode != SplashMode.LEVEL_COMPLETE:
+	if splash_mode != TypesScript.SplashMode.LEVEL_COMPLETE:
 		return
 
 	run_total_score = clampi(run_total_score - _calculate_star_rating(), 0, MAX_TRACKED_VALUE)
 	run_levels_cleared = clampi(run_levels_cleared - 1, 0, MAX_TRACKED_VALUE)
-	splash_mode = SplashMode.NONE
+	splash_mode = TypesScript.SplashMode.NONE
 	completed = false
 	_restart_level()
 
@@ -1178,13 +1152,13 @@ func _handle_splash_end_run() -> void:
 func _handle_splash_invert() -> void:
 	if _is_content_fade_active():
 		return
-	if splash_mode != SplashMode.PAUSED:
+	if splash_mode != TypesScript.SplashMode.PAUSED:
 		return
 	_toggle_invert_colors()
 	_show_pause_menu()
 
 
-func _begin_content_fade(action: TransitionAction) -> void:
+func _begin_content_fade(action: int) -> void:
 	pending_transition_action = action
 	content_fade_direction = 1
 	content_fade_elapsed = 0.0
@@ -1192,20 +1166,20 @@ func _begin_content_fade(action: TransitionAction) -> void:
 
 
 func _perform_pending_transition_action() -> void:
-	var action: TransitionAction = pending_transition_action
-	pending_transition_action = TransitionAction.NONE
+	var action: int = pending_transition_action
+	pending_transition_action = TypesScript.TransitionAction.NONE
 	match action:
-		TransitionAction.START_RUN:
+		TypesScript.TransitionAction.START_RUN:
 			title_loading_active = true
 			_show_loading_splash()
 			if loading_timer != null:
 				loading_timer.start(TITLE_LOADING_DELAY)
-		TransitionAction.NEXT_LEVEL:
+		TypesScript.TransitionAction.NEXT_LEVEL:
 			_advance_to_next_level()
 		_:
 			_reset_content_fade()
 			return
-	if action == TransitionAction.START_RUN:
+	if action == TypesScript.TransitionAction.START_RUN:
 		_reset_content_fade()
 		return
 	content_fade_direction = -1
@@ -1226,7 +1200,7 @@ func _get_content_fade_alpha() -> float:
 func _reset_content_fade() -> void:
 	content_fade_direction = 0
 	content_fade_elapsed = CONTENT_FADE_DURATION
-	pending_transition_action = TransitionAction.NONE
+	pending_transition_action = TypesScript.TransitionAction.NONE
 
 
 func _apply_content_fade_to_ui() -> void:
@@ -1243,7 +1217,7 @@ func _finish_title_loading() -> void:
 
 func _show_loading_splash() -> void:
 	_apply_ui_metrics()
-	splash_mode = SplashMode.TITLE
+	splash_mode = TypesScript.SplashMode.TITLE
 	completed = true
 	_set_hud_visible(false)
 	_set_footer_enabled(false)
@@ -1311,7 +1285,7 @@ func _refresh_localized_text() -> void:
 		retry_button.text = _loc("RETRY")
 	if end_run_button != null:
 		end_run_button.text = _loc("END_RUN")
-	if splash_retry_button != null and splash_mode != SplashMode.LEVEL_COMPLETE:
+	if splash_retry_button != null and splash_mode != TypesScript.SplashMode.LEVEL_COMPLETE:
 		splash_retry_button.text = _loc("RETRY")
 	if splash_invert_button != null:
 		splash_invert_button.text = _loc("INVERT")
@@ -1339,9 +1313,9 @@ func _configure_input_actions() -> void:
 
 
 func _get_splash_action_text() -> String:
-	if splash_mode == SplashMode.TITLE:
+	if splash_mode == TypesScript.SplashMode.TITLE:
 		return _loc("START")
-	if splash_mode == SplashMode.RUN_COMPLETE:
+	if splash_mode == TypesScript.SplashMode.RUN_COMPLETE:
 		return _loc("NEW_RUN")
 	return _loc("NEXT")
 
@@ -1454,18 +1428,18 @@ func _set_language(next_language_code: String) -> void:
 	_refresh_ui_layout()
 	_refresh_localized_text()
 	match splash_mode:
-		SplashMode.TITLE:
+		TypesScript.SplashMode.TITLE:
 			if title_loading_active:
 				_show_loading_splash()
 			else:
 				_show_title_screen()
-		SplashMode.PAUSED:
+		TypesScript.SplashMode.PAUSED:
 			_show_pause_menu()
-		SplashMode.LEVEL_COMPLETE:
+		TypesScript.SplashMode.LEVEL_COMPLETE:
 			_update_completion_splash()
-		SplashMode.LEVEL_FAILED:
+		TypesScript.SplashMode.LEVEL_FAILED:
 			_show_failure_splash()
-		SplashMode.RUN_COMPLETE:
+		TypesScript.SplashMode.RUN_COMPLETE:
 			_show_run_complete_splash()
 		_:
 			_update_ui()
@@ -1516,7 +1490,7 @@ func _is_player_total_bounce_active() -> bool:
 
 
 func _has_active_animation() -> bool:
-	return _is_marker_intro_active() or _is_move_animation_active() or _is_landing_bounce_active() or _is_goal_clear_active() or _is_goal_fail_active() or pending_goal_outcome != GoalResolveOutcome.NONE
+	return _is_marker_intro_active() or _is_move_animation_active() or _is_landing_bounce_active() or _is_goal_clear_active() or _is_goal_fail_active() or pending_goal_outcome != TypesScript.GoalResolveOutcome.NONE
 
 
 func _skip_active_animations() -> void:
@@ -1524,19 +1498,19 @@ func _skip_active_animations() -> void:
 	if _is_goal_clear_active():
 		move_animation_elapsed = MOVE_ANIMATION_DURATION
 		goal_clear_elapsed = GOAL_CLEAR_DURATION
-		pending_goal_outcome = GoalResolveOutcome.NONE
+		pending_goal_outcome = TypesScript.GoalResolveOutcome.NONE
 		_finish_level_complete()
 		return
 	if _is_goal_fail_active():
 		move_animation_elapsed = MOVE_ANIMATION_DURATION
 		goal_fail_elapsed = GOAL_FAIL_DURATION
-		pending_goal_outcome = GoalResolveOutcome.NONE
+		pending_goal_outcome = TypesScript.GoalResolveOutcome.NONE
 		_finish_level_failed()
 		return
 	if _is_move_animation_active():
 		move_animation_elapsed = MOVE_ANIMATION_DURATION
 		landing_bounce_elapsed = LANDING_BOUNCE_DURATION
-		if pending_goal_outcome != GoalResolveOutcome.NONE:
+		if pending_goal_outcome != TypesScript.GoalResolveOutcome.NONE:
 			_begin_goal_resolution()
 		return
 	move_animation_elapsed = MOVE_ANIMATION_DURATION
@@ -1790,8 +1764,8 @@ func _apply_ui_metrics() -> void:
 	var button_size: int = int(round(38.0 * scale))
 	var splash_title_size: int = int(round(92.0 * scale))
 	var splash_stat_size: int = int(round(48.0 * scale))
-	var splash_score_size: int = int(round((96.0 if splash_mode == SplashMode.RUN_COMPLETE else 48.0) * scale))
-	var splash_star_size: int = int(round((54.0 if splash_mode == SplashMode.RUN_COMPLETE else 92.0) * scale))
+	var splash_score_size: int = int(round((96.0 if splash_mode == TypesScript.SplashMode.RUN_COMPLETE else 48.0) * scale))
+	var splash_star_size: int = int(round((54.0 if splash_mode == TypesScript.SplashMode.RUN_COMPLETE else 92.0) * scale))
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(hud_by_label, detail_size, 5, goal_color)
@@ -1803,7 +1777,7 @@ func _apply_ui_metrics() -> void:
 	hud_logo_rect.custom_minimum_size = Vector2(round(292.0 * scale), round(62.0 * scale))
 
 	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
-	_apply_label_style(splash_score_label, splash_score_size, 8 if splash_mode == SplashMode.RUN_COMPLETE else 6, player_color)
+	_apply_label_style(splash_score_label, splash_score_size, 8 if splash_mode == TypesScript.SplashMode.RUN_COMPLETE else 6, player_color)
 	_apply_label_style(splash_optimal_label, splash_stat_size, 6, start_color)
 	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
 	_apply_label_style(splash_best_label, splash_stat_size, 6, goal_color)
@@ -1942,7 +1916,7 @@ func _set_footer_enabled(is_enabled: bool) -> void:
 
 
 func _is_menu_navigation_active() -> bool:
-	return splash_mode != SplashMode.NONE
+	return splash_mode != TypesScript.SplashMode.NONE
 
 
 func _handle_menu_navigation_input(event: InputEvent) -> bool:
@@ -2038,247 +2012,6 @@ func _adjust_focused_slider(slider: HSlider, horizontal_direction: int) -> void:
 		audio_controller.play_menu_move()
 
 
-func _draw_background_glow(viewport_rect: Rect2) -> void:
-	_draw_floating_background_circle(viewport_rect, Vector2(0.16, 0.16), 0.16, background_glow_color, 0.0, 0.03)
-	_draw_floating_background_circle(viewport_rect, Vector2(0.86, 0.22), 0.12, secondary_glow_color, 1.7, 0.026)
-	_draw_floating_background_circle(viewport_rect, Vector2(0.82, 0.84), 0.18, goal_color, 3.2, 0.034)
-	if splash_mode == SplashMode.TITLE:
-		_draw_floating_background_circle(viewport_rect, Vector2(0.38, 0.72), 0.1, retry_button_hover_color, 0.9, 0.04)
-		_draw_floating_background_circle(viewport_rect, Vector2(0.68, 0.58), 0.08, player_color, 2.4, 0.045)
-
-
-func _draw_floating_background_circle(viewport_rect: Rect2, anchor: Vector2, radius_scale: float, color: Color, time_offset: float, drift_scale: float) -> void:
-	var min_size: float = minf(viewport_rect.size.x, viewport_rect.size.y)
-	var time: float = pulse_time + time_offset
-	var center: Vector2 = Vector2(
-		viewport_rect.size.x * anchor.x + sin(time * 0.42) * viewport_rect.size.x * drift_scale,
-		viewport_rect.size.y * anchor.y + cos(time * 0.36) * viewport_rect.size.y * drift_scale
-	)
-	var radius: float = min_size * radius_scale * (0.84 + (0.5 + 0.5 * sin(time * 0.78)) * 0.42)
-	var hue_shift: float = 0.5 + 0.5 * sin(time * 0.22 + anchor.x * 7.0 + anchor.y * 5.0)
-	var hue: float = fposmod(color.h + 0.18 * hue_shift, 1.0)
-	var saturation: float = 0.32 + 0.12 * (0.5 + 0.5 * cos(time * 0.28 + time_offset))
-	var value: float = 0.15 + 0.06 * (0.5 + 0.5 * sin(time * 0.24))
-	if invert_colors_enabled:
-		value += 0.12
-	var bubble_color: Color = Color.from_hsv(hue, saturation, value, 0.14)
-	draw_circle(center, radius, bubble_color)
-
-
-func _draw_playfield_trim(draw_area: Rect2) -> void:
-	draw_rect(draw_area.grow(2.0), _with_alpha(playfield_trim_color, 0.58), false, 3.0)
-
-
-func _draw_grid_cells(origin: Vector2, cell_size: float) -> void:
-	var line_width: float = clampf(cell_size * 0.04, 2.0, 5.0)
-	var number_font_size: int = clampi(int(round(cell_size * 0.46)), 20, 60)
-	var goal_font_size: int = clampi(int(round(cell_size * 0.38)), 18, 52)
-
-	for y in range(grid_height):
-		for x in range(grid_width):
-			var cell: Vector2i = Vector2i(x, y)
-			var base_rect: Rect2 = Rect2(origin + Vector2(x, y) * cell_size, Vector2.ONE * cell_size)
-			var rect: Rect2 = _get_tile_draw_rect(base_rect, cell, cell_size)
-			var fill_color: Color = _get_cell_fill_color(cell)
-			_draw_tile_surface(rect, fill_color, line_width, _is_cell_available(cell))
-
-			if cell == goal_cell:
-				_draw_centered_text(rect, str(goal_target), goal_font_size, text_color, 4)
-			else:
-				_draw_centered_text(rect, str(_get_cell_value(cell)), number_font_size, text_color, 4)
-
-
-func _draw_goal_overlay(cell_size: float) -> void:
-	var fail_shake: Vector2 = _get_goal_fail_shake(cell_size)
-	var center: Vector2 = _cell_to_screen(goal_cell) + fail_shake
-	var radius: float = cell_size * 0.42 * _get_goal_clear_scale() * _get_goal_fail_scale()
-	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.6)
-	var arc_color: Color = warning_color if _is_goal_fail_active() else goal_color
-	var outer_alpha: float = 0.94 if not _is_goal_fail_active() else 0.98
-	var inner_alpha: float = 0.42 if not _is_goal_fail_active() else 0.58
-	draw_arc(center, radius * (1.16 + pulse * 0.1), 0.0, TAU, 40, _with_alpha(arc_color.lightened(0.16), outer_alpha), maxf(cell_size * 0.04, 2.0))
-	draw_arc(center, radius * 0.82, 0.0, TAU, 32, _with_alpha(arc_color, inner_alpha), maxf(cell_size * 0.03, 2.0))
-	if _is_goal_fail_active():
-		draw_arc(center, radius * 1.34, PI * 0.08, PI * 0.92, 22, _with_alpha(warning_color.lightened(0.08), 0.84), maxf(cell_size * 0.035, 2.0))
-
-
-func _draw_start_overlay(cell_size: float) -> void:
-	return
-
-
-func _draw_player_overlay(cell_size: float) -> void:
-	var pulse: float = 0.5 + 0.5 * sin(pulse_time * 3.0)
-	var player_radius: float = clampf(cell_size * 0.34, 17.0, 36.0)
-	var player_intro_scale: float = _get_marker_intro_scale(player_radius)
-	var player_clear_scale: float = _get_player_clear_scale()
-	var player_fail_scale: float = _get_player_fail_scale()
-	var player_move_scale: float = _get_player_move_scale()
-	var player_total_scale: float = _get_player_total_bounce_scale()
-	var fail_shake: Vector2 = _get_goal_fail_shake(cell_size)
-	_draw_player_marker(_get_player_draw_position() + fail_shake, player_radius * player_intro_scale * player_clear_scale * player_fail_scale * player_move_scale * player_total_scale, pulse, cell_size)
-
-
-func _draw_player_marker(center: Vector2, radius: float, pulse: float, cell_size: float) -> void:
-	var ring_color: Color = warning_color if _is_goal_fail_active() else player_color.lightened(0.2)
-	var outer_fill: Color = warning_color.lightened(0.24) if _is_goal_fail_active() else player_core_color
-	var core_fill: Color = warning_color if _is_goal_fail_active() else player_color
-	draw_circle(center, radius * (1.08 + pulse * 0.04), _with_alpha(ring_color, 0.18))
-	draw_circle(center, radius, outer_fill)
-	draw_circle(center, radius * 0.92, core_fill)
-	var text_rect: Rect2 = Rect2(center - Vector2.ONE * radius * 0.92, Vector2.ONE * radius * 1.84)
-	var total_text: String = str(player_total)
-	var text_scale_factor: float = minf(0.46, 1.42 / maxf(float(total_text.length()), 2.0))
-	var text_size: int = clampi(int(round(cell_size * text_scale_factor)), 12, 52)
-	_draw_centered_text(text_rect, total_text, text_size, text_color, 4)
-
-
-func _draw_centered_text(rect: Rect2, text: String, font_size: int, color: Color, outline_thickness: int = 2) -> void:
-	if ui_font == null:
-		return
-	var text_size: Vector2 = ui_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
-	var outline: Color = _get_text_outline_color(color)
-	var baseline: Vector2 = Vector2(
-		rect.position.x + (rect.size.x - text_size.x) * 0.5,
-		rect.position.y + rect.size.y * 0.5 + ui_font.get_ascent(font_size) * 0.38
-	)
-	for offset_y in range(-outline_thickness, outline_thickness + 1):
-		for offset_x in range(-outline_thickness, outline_thickness + 1):
-			if offset_x == 0 and offset_y == 0:
-				continue
-			if absf(float(offset_x)) + absf(float(offset_y)) > float(outline_thickness) * 1.6:
-				continue
-			draw_string(ui_font, baseline + Vector2(offset_x, offset_y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _with_alpha(outline, 0.95))
-	draw_string(ui_font, baseline, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
-
-
-func _get_cell_fill_color(cell: Vector2i) -> Color:
-	if cell == goal_cell:
-		return playfield_color.lerp(goal_color, 0.18)
-
-	var value: int = _get_cell_value(cell)
-	if tile_value_colors.has(value):
-		return tile_value_colors[value]
-	var value_ratio: float = clampf(float(value - 1) / maxf(float(max_cell_value - 1), 1.0), 0.0, 1.0)
-	return playfield_color.lerp(playfield_trim_color, 0.12 + value_ratio * 0.28)
-
-
-func _get_tile_draw_rect(base_rect: Rect2, cell: Vector2i, cell_size: float) -> Rect2:
-	var center: Vector2 = base_rect.get_center()
-	var scale_x: float = 0.9
-	var scale_y: float = 0.9
-	var offset_y: float = 0.0
-
-	if _is_cell_available(cell):
-		var available_pulse: float = 0.5 + 0.5 * sin(pulse_time * 4.4 + float(cell.x + cell.y))
-		scale_x += 0.05 + available_pulse * 0.05
-		scale_y += 0.05 + available_pulse * 0.05
-		offset_y -= available_pulse * cell_size * 0.02
-
-	if _is_landing_bounce_active() and cell == landing_bounce_cell:
-		var progress: float = clampf(landing_bounce_elapsed / LANDING_BOUNCE_DURATION, 0.0, 1.0)
-		var wave: float = sin(progress * PI)
-		scale_x += wave * 0.08
-		scale_y += wave * 0.12
-		offset_y -= wave * cell_size * 0.14
-
-	var size: Vector2 = base_rect.size * Vector2(scale_x, scale_y)
-	return Rect2(center - size * 0.5 + Vector2(0.0, offset_y), size)
-
-
-func _draw_tile_surface(rect: Rect2, fill_color: Color, line_width: float, is_available: bool) -> void:
-	var corner_radius: float = rect.size.x * 0.18
-	var display_color: Color = fill_color
-	if is_available:
-		var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
-		var inverted: Color = Color(1.0 - fill_color.r, 1.0 - fill_color.g, 1.0 - fill_color.b, fill_color.a)
-		display_color = fill_color.lerp(inverted, 0.38 + pulse * 0.62)
-	var shell_color: Color = display_color.lightened(0.26)
-	var core_color: Color = display_color.darkened(0.36)
-	var face_color: Color = display_color.lightened(0.14)
-	_draw_rounded_rect(rect, shell_color, corner_radius)
-	var middle_rect: Rect2 = rect.grow(-line_width * 0.45)
-	var middle_radius: float = maxf(corner_radius - line_width * 0.85, 3.0)
-	_draw_rounded_rect(middle_rect, core_color, middle_radius)
-	var face_rect: Rect2 = middle_rect.grow(-line_width * 0.62)
-	var face_radius: float = maxf(middle_radius - line_width * 0.9, 2.0)
-	_draw_rounded_rect(face_rect, face_color, face_radius)
-	var top_glow_rect: Rect2 = Rect2(face_rect.position + Vector2(0.0, face_rect.size.y * 0.02), Vector2(face_rect.size.x, face_rect.size.y * 0.46))
-	var bottom_shade_rect: Rect2 = Rect2(face_rect.position + Vector2(0.0, face_rect.size.y * 0.48), Vector2(face_rect.size.x, face_rect.size.y * 0.42))
-	_draw_rounded_rect(top_glow_rect, _with_alpha(shell_color.lightened(0.18), 0.22), face_radius)
-	_draw_rounded_rect(bottom_shade_rect, _with_alpha(core_color.darkened(0.12), 0.18), face_radius)
-	_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.17), face_radius)
-	_draw_rounded_rect_outline(face_rect, _with_alpha(Color.WHITE, 0.22), face_radius, maxf(1.0, line_width * 0.48))
-	_draw_rounded_rect_outline(middle_rect, _with_alpha(core_color.darkened(0.3), 0.46), middle_radius, maxf(1.0, line_width * 0.45))
-	_draw_rounded_rect_outline(rect, _with_alpha(shell_color.lightened(0.16), 0.62), corner_radius, maxf(1.0, line_width * 0.82))
-	if is_available:
-		var pulse_outline: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
-		_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.18 + pulse_outline * 0.08), face_radius)
-		_draw_rounded_rect_outline(rect, _with_alpha(player_core_color, 0.3 + pulse_outline * 0.35), corner_radius, maxf(2.0, line_width * 1.1))
-
-
-func _draw_rounded_rect(rect: Rect2, color: Color, radius: float) -> void:
-	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
-	if r <= 1.0:
-		draw_rect(rect, color, true)
-		return
-	draw_rect(Rect2(rect.position + Vector2(r, 0.0), Vector2(rect.size.x - r * 2.0, rect.size.y)), color, true)
-	draw_rect(Rect2(rect.position + Vector2(0.0, r), Vector2(rect.size.x, rect.size.y - r * 2.0)), color, true)
-	draw_circle(rect.position + Vector2(r, r), r, color)
-	draw_circle(rect.position + Vector2(rect.size.x - r, r), r, color)
-	draw_circle(rect.position + Vector2(r, rect.size.y - r), r, color)
-	draw_circle(rect.position + Vector2(rect.size.x - r, rect.size.y - r), r, color)
-
-
-func _draw_rounded_rect_outline(rect: Rect2, color: Color, radius: float, width: float) -> void:
-	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
-	if r <= 1.0:
-		draw_rect(rect, color, false, width)
-		return
-	var top_left: Vector2 = rect.position + Vector2(r, r)
-	var top_right: Vector2 = rect.position + Vector2(rect.size.x - r, r)
-	var bottom_left: Vector2 = rect.position + Vector2(r, rect.size.y - r)
-	var bottom_right: Vector2 = rect.position + Vector2(rect.size.x - r, rect.size.y - r)
-	draw_arc(top_left, r, PI, PI * 1.5, 10, color, width)
-	draw_arc(top_right, r, PI * 1.5, TAU, 10, color, width)
-	draw_arc(bottom_right, r, 0.0, PI * 0.5, 10, color, width)
-	draw_arc(bottom_left, r, PI * 0.5, PI, 10, color, width)
-	draw_line(rect.position + Vector2(r, 0.0), rect.position + Vector2(rect.size.x - r, 0.0), color, width)
-	draw_line(rect.position + Vector2(rect.size.x, r), rect.position + Vector2(rect.size.x, rect.size.y - r), color, width)
-	draw_line(rect.position + Vector2(r, rect.size.y), rect.position + Vector2(rect.size.x - r, rect.size.y), color, width)
-	draw_line(rect.position + Vector2(0.0, r), rect.position + Vector2(0.0, rect.size.y - r), color, width)
-
-
-func _draw_corner_lights(rect: Rect2, color: Color, radius: float) -> void:
-	var r: float = minf(radius, minf(rect.size.x, rect.size.y) * 0.5)
-	if r <= 1.0:
-		return
-	draw_circle(rect.position + Vector2(r, r), r, color)
-	draw_circle(rect.position + Vector2(rect.size.x - r, r), r, color)
-	draw_circle(rect.position + Vector2(r, rect.size.y - r), r, color)
-	draw_circle(rect.position + Vector2(rect.size.x - r, rect.size.y - r), r, color)
-
-
-func _is_cell_available(cell: Vector2i) -> bool:
-	if splash_mode != SplashMode.NONE or completed:
-		return false
-	if cell == player_cell:
-		return false
-	return _orthogonal_neighbors(player_cell).has(cell)
-
-
-func _get_cell_text_color(fill_color: Color) -> Color:
-	var luminance: float = fill_color.r * 0.299 + fill_color.g * 0.587 + fill_color.b * 0.114
-	if luminance >= 0.54:
-		return DARK_TEXT_COLOR
-	return BRIGHT_TEXT_COLOR
-
-
-func _get_text_outline_color(text_fill_color: Color) -> Color:
-	if text_fill_color == DARK_TEXT_COLOR:
-		return BRIGHT_TEXT_COLOR
-	return outline_color
-
-
 func _get_best_score_text() -> String:
 	return ProgressionScript.get_best_score_text(best_run_score, _loc("BEST_SCORE_NONE"), _loc("BEST_SCORE"))
 
@@ -2325,8 +2058,8 @@ func _is_inside(cell: Vector2i) -> bool:
 
 
 func _get_cell_value(cell: Vector2i) -> int:
-	return int(cell_values[cell.y][cell.x])
+	return PlayfieldUtilsScript.get_cell_value(cell_values, cell)
 
 
 func _with_alpha(color: Color, alpha: float) -> Color:
-	return Color(color.r, color.g, color.b, alpha)
+	return PlayfieldUtilsScript.with_alpha(color, alpha)

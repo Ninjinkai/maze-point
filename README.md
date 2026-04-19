@@ -96,10 +96,10 @@ For publishing, GitHub Releases is a better fit than committing raw desktop bina
 ## Repository layout
 
 - `scripts/game.gd` - high-level game coordinator
-- `scripts/game/` - extracted gameplay progression, input, persistence, styling, and rendering helpers
+- `scripts/game/` - extracted gameplay progression, input, persistence, styling, rendering, playfield utilities, and shared game types
 - `scripts/maze_generator.gd` - procedural number-grid generation and optimal-path validation
-- `scripts/generator/` - extracted generator scoring and path-shape heuristics
+- `scripts/generator/` - extracted generator scoring, path-shape heuristics, and puzzle value objects
 - `scripts/procedural_audio.gd` - procedural music and synthesized sound effects controller
-- `scripts/audio/` - extracted audio math and stream-building helpers
+- `scripts/audio/` - extracted audio math, music-style data objects, and stream-building helpers
 - `tests/` - headless unit tests for pure helper modules
 - `assets/fonts/` - bundled UI font assets

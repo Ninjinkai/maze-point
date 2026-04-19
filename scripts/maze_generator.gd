@@ -2,19 +2,20 @@ extends RefCounted
 class_name MazeGenerator
 
 const MetricsScript = preload("res://scripts/generator/maze_generator_metrics.gd")
+const PuzzleDataScript = preload("res://scripts/generator/maze_puzzle_data.gd")
 
 const DIRS: Array[Vector2i] = [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const MAX_GENERATION_ATTEMPTS := 220
 const MAX_PATH_SEARCH_ATTEMPTS := 48
 
 
-static func generate(width: int, height: int, seed: int, difficulty_scale: float = 1.0) -> Dictionary:
+static func generate(width: int, height: int, seed: int, difficulty_scale: float = 1.0):
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed
 
 	for _attempt in range(MAX_GENERATION_ATTEMPTS):
-		var candidate: Dictionary = _build_candidate(width, height, rng, difficulty_scale)
-		if not candidate.is_empty():
+		var candidate = _build_candidate(width, height, rng, difficulty_scale)
+		if candidate != null:
 			return candidate
 
 	return _build_fallback_candidate(width, height, rng, difficulty_scale)
@@ -33,24 +34,24 @@ static func is_inside(cell: Vector2i, width: int, height: int) -> bool:
 	return cell.x >= 0 and cell.y >= 0 and cell.x < width and cell.y < height
 
 
-static func _build_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float) -> Dictionary:
+static func _build_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float):
 	var endpoints: Dictionary = _pick_start_and_goal(width, height, rng)
 	if endpoints.is_empty():
-		return {}
+		return null
 
 	var start: Vector2i = endpoints["start"]
 	var goal: Vector2i = endpoints["goal"]
 	var minimum_moves: int = _manhattan_distance(start, goal)
 	var maximum_moves: int = mini(width * height - 1, minimum_moves + _detour_budget(width, height, difficulty_scale))
 	if maximum_moves < minimum_moves:
-		return {}
+		return null
 
 	var move_options: Array[int] = []
 	for moves in range(minimum_moves, maximum_moves + 1):
 		if ((moves - minimum_moves) % 2) == 0:
 			move_options.append(moves)
 	if move_options.is_empty():
-		return {}
+		return null
 
 	for index in range(move_options.size() - 1, 0, -1):
 		var swap_index: int = rng.randi_range(0, index)
@@ -74,20 +75,20 @@ static func _build_candidate(width: int, height: int, rng: RandomNumberGenerator
 		if solution_summary.is_empty():
 			continue
 
-		return {
-			"cell_values": values,
-			"start": start,
-			"goal": goal,
-			"target_total": target_total,
-			"solution_path": solution_summary["path"],
-			"solution_length": solution_summary["steps"],
-			"max_cell_value": _get_max_cell_value(difficulty_scale),
-		}
+		return PuzzleDataScript.new(
+			values,
+			start,
+			goal,
+			target_total,
+			solution_summary["path"],
+			solution_summary["steps"],
+			_get_max_cell_value(difficulty_scale)
+		)
 
-	return {}
+	return null
 
 
-static func _build_fallback_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float) -> Dictionary:
+static func _build_fallback_candidate(width: int, height: int, rng: RandomNumberGenerator, difficulty_scale: float):
 	var start: Vector2i = Vector2i(0, height / 2)
 	var goal: Vector2i = Vector2i(width - 1, height / 2)
 	if start == goal:
@@ -116,15 +117,15 @@ static func _build_fallback_candidate(width: int, height: int, rng: RandomNumber
 				values[y][x] = 1
 
 	var target_total: int = _sum_path_total(values, path, goal)
-	return {
-		"cell_values": values,
-		"start": start,
-		"goal": goal,
-		"target_total": target_total,
-		"solution_path": path,
-		"solution_length": max(path.size() - 1, 0),
-		"max_cell_value": _get_max_cell_value(difficulty_scale),
-	}
+	return PuzzleDataScript.new(
+		values,
+		start,
+		goal,
+		target_total,
+		path,
+		max(path.size() - 1, 0),
+		_get_max_cell_value(difficulty_scale)
+	)
 
 
 static func _pick_start_and_goal(width: int, height: int, rng: RandomNumberGenerator) -> Dictionary:

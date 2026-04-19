@@ -1,6 +1,8 @@
 extends RefCounted
 class_name MazePointRenderer
 
+const TypesScript = preload("res://scripts/game/game_types.gd")
+
 func draw(game: Node2D) -> void:
 	var viewport_rect: Rect2 = game.get_viewport_rect()
 	game.draw_rect(viewport_rect, game.background_color)
@@ -22,7 +24,7 @@ func _draw_background_glow(game: Node2D, viewport_rect: Rect2) -> void:
 	_draw_floating_background_circle(game, viewport_rect, Vector2(0.16, 0.16), 0.16, game.background_glow_color, 0.0, 0.03)
 	_draw_floating_background_circle(game, viewport_rect, Vector2(0.86, 0.22), 0.12, game.secondary_glow_color, 1.7, 0.026)
 	_draw_floating_background_circle(game, viewport_rect, Vector2(0.82, 0.84), 0.18, game.goal_color, 3.2, 0.034)
-	if game.splash_mode == game.SplashMode.TITLE:
+	if game.splash_mode == TypesScript.SplashMode.TITLE:
 		_draw_floating_background_circle(game, viewport_rect, Vector2(0.38, 0.72), 0.1, game.retry_button_hover_color, 0.9, 0.04)
 		_draw_floating_background_circle(game, viewport_rect, Vector2(0.68, 0.58), 0.08, game.player_color, 2.4, 0.045)
 
@@ -241,7 +243,7 @@ func _draw_corner_lights(game: Node2D, rect: Rect2, color: Color, radius: float)
 
 
 func _is_cell_available(game: Node2D, cell: Vector2i) -> bool:
-	if game.splash_mode != game.SplashMode.NONE or game.completed:
+	if game.splash_mode != TypesScript.SplashMode.NONE or game.completed:
 		return false
 	if cell == game.player_cell:
 		return false

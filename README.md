@@ -40,6 +40,7 @@ Rules:
 - **Invert colors:** `I` or gamepad `X`
 - **Pause menu:** `Esc` or gamepad `Start`
 - **Pause controls:** the pause menu includes separate music and SFX volume sliders.
+- **Saved preferences:** music volume, SFX volume, and color inversion persist between launches.
 - **Menu navigation:** arrow keys or gamepad **D-pad**
 
 ## Audio
@@ -50,6 +51,7 @@ All music and sound effects are generated in code at runtime.
 - Each run keeps a persistent procedural music theme instead of resetting every level or retry.
 - The music shifts its energy as the run state changes.
 - Movement, goal clear, failure, menu navigation, restart, and palette inversion all have synthesized cues.
+- The best run score is saved locally and shown on the title screen and pause menu.
 
 ## Running locally
 

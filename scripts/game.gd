@@ -3,6 +3,8 @@ extends Node2D
 const MazeGeneratorScript = preload("res://scripts/maze_generator.gd")
 const ProceduralAudioScript = preload("res://scripts/procedural_audio.gd")
 const COMPANY_LOGO_PATH := "res://assets/branding/SlopwAIr_logo_vector.png"
+const SAVE_FILE_PATH := "user://maze_point_settings.cfg"
+const MAX_TRACKED_VALUE := 999999999
 
 const BRIGHT_TEXT_COLOR := Color("f7fbff")
 const DARK_TEXT_COLOR := Color("102030")
@@ -82,6 +84,9 @@ var menu_focus_index: int = -1
 var player_skill_rating: float = 0.0
 var current_level_difficulty_scale: float = 1.0
 var tile_value_colors: Dictionary = {}
+var music_volume_setting: float = 1.0
+var sfx_volume_setting: float = 1.0
+var best_run_score: int = 0
 
 var text_color: Color = BRIGHT_TEXT_COLOR
 var outline_color: Color = DARK_OUTLINE_COLOR
@@ -107,6 +112,8 @@ var end_button_hover_color: Color = Color("915eff")
 var end_button_pressed_color: Color = Color("aa7bff")
 
 var maze_label: Label
+var hud_by_label: Label
+var hud_logo_rect: TextureRect
 var score_label: Label
 var timer_label: Label
 var retry_button: Button
@@ -130,6 +137,7 @@ var splash_title_label: Label
 var splash_score_label: Label
 var splash_optimal_label: Label
 var splash_retries_label: Label
+var splash_best_label: Label
 var splash_stars_label: Label
 var advance_timer: Timer
 var ui_font: Font
@@ -138,12 +146,14 @@ var audio_controller
 
 func _ready() -> void:
 	randomize()
+	_load_persistent_data()
 	_configure_input_actions()
 	_load_ui_font()
 	_apply_palette(level)
 	_build_ui()
 	_build_advance_timer()
 	_build_audio()
+	_apply_persistent_audio_settings()
 	_refresh_ui_layout()
 	_show_title_screen()
 
@@ -312,8 +322,8 @@ func _start_new_run() -> void:
 
 
 func _restart_level() -> void:
-	level_retries += 1
-	run_total_resets += 1
+	level_retries = _saturating_add(level_retries, 1)
+	run_total_resets = _saturating_add(run_total_resets, 1)
 	if audio_controller != null:
 		audio_controller.play_restart()
 	_generate_level(true)
@@ -449,10 +459,10 @@ func _move_player_to(target_cell: Vector2i) -> void:
 	move_animation_elapsed = 0.0
 	landing_bounce_cell = target_cell
 	landing_bounce_elapsed = 0.0
-	player_steps += 1
+	player_steps = _saturating_add(player_steps, 1)
 
 	if player_cell != goal_cell:
-		player_total += _get_cell_value(player_cell)
+		player_total = _saturating_add(player_total, _get_cell_value(player_cell))
 		player_total_bounce_elapsed = 0.0
 
 	if audio_controller != null:
@@ -506,8 +516,8 @@ func _finish_level_complete() -> void:
 	completed = true
 	splash_mode = SplashMode.LEVEL_COMPLETE
 	_record_level_result(true)
-	run_total_score += _calculate_star_rating()
-	run_levels_cleared += 1
+	run_total_score = _saturating_add(run_total_score, _calculate_star_rating())
+	run_levels_cleared = _saturating_add(run_levels_cleared, 1)
 	_set_footer_enabled(false)
 	_update_ui()
 	_update_completion_splash()
@@ -522,7 +532,7 @@ func _finish_level_failed() -> void:
 func _advance_to_next_level() -> void:
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
-	level += 1
+	level = _saturating_add(level, 1)
 	level_retries = 0
 	_generate_level(false)
 
@@ -544,6 +554,8 @@ func _update_completion_splash() -> void:
 	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = true
 	splash_retries_label.text = "RETRIES %d" % level_retries
+	splash_best_label.visible = false
+	splash_best_label.text = ""
 	splash_stars_label.visible = true
 	splash_stars_label.text = _build_star_string(stars)
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
@@ -569,6 +581,8 @@ func _show_failure_splash(title: String) -> void:
 	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = false
 	splash_retries_label.text = ""
+	splash_best_label.visible = false
+	splash_best_label.text = ""
 	splash_stars_label.visible = false
 	splash_action_button.text = "RETRY"
 	splash_action_button.visible = true
@@ -582,17 +596,21 @@ func _show_failure_splash(title: String) -> void:
 
 
 func _show_run_complete_splash() -> void:
+	var final_score: int = _calculate_final_run_score()
+	_remember_best_run_score(final_score)
 	splash_mode = SplashMode.RUN_COMPLETE
 	completed = true
 	_set_footer_enabled(false)
 	splash_title_label.text = "RUN OVER"
-	splash_score_label.text = "SCORE %d" % _calculate_final_run_score()
+	splash_score_label.text = "SCORE %d" % final_score
 	if splash_logo_rect != null:
 		splash_logo_rect.visible = false
 	splash_optimal_label.visible = true
 	splash_optimal_label.text = "LEVELS %d" % run_levels_cleared
 	splash_retries_label.visible = true
 	splash_retries_label.text = "RETRIES %d" % run_total_resets
+	splash_best_label.visible = false
+	splash_best_label.text = ""
 	splash_stars_label.visible = true
 	splash_stars_label.text = "STARS %d" % run_total_score
 	splash_stars_label.add_theme_color_override("font_color", goal_color)
@@ -608,7 +626,9 @@ func _show_run_complete_splash() -> void:
 
 
 func _show_pause_menu() -> void:
-	if splash_mode != SplashMode.NONE or completed:
+	if completed:
+		return
+	if splash_mode != SplashMode.NONE and splash_mode != SplashMode.PAUSED:
 		return
 	splash_mode = SplashMode.PAUSED
 	_set_footer_enabled(false)
@@ -620,6 +640,8 @@ func _show_pause_menu() -> void:
 	splash_optimal_label.text = "OPTIMAL %d" % optimal_steps
 	splash_retries_label.visible = true
 	splash_retries_label.text = "RETRIES %d" % level_retries
+	splash_best_label.visible = true
+	splash_best_label.text = _get_best_score_text()
 	splash_stars_label.visible = false
 	splash_action_button.text = "RESUME"
 	splash_action_button.visible = true
@@ -654,10 +676,12 @@ func _show_title_screen() -> void:
 	splash_title_label.text = "MAZE POINT"
 	splash_score_label.text = "by"
 	splash_score_label.visible = true
-	splash_optimal_label.visible = false
-	splash_optimal_label.text = ""
+	splash_optimal_label.visible = true
+	splash_optimal_label.text = _get_best_score_text()
 	splash_retries_label.visible = false
 	splash_retries_label.text = ""
+	splash_best_label.visible = false
+	splash_best_label.text = ""
 	splash_stars_label.visible = false
 	splash_action_button.text = "START"
 	splash_action_button.visible = true
@@ -700,7 +724,11 @@ func _calculate_star_rating() -> int:
 
 
 func _calculate_final_run_score() -> int:
-	return maxi(run_total_score * 120 + run_levels_cleared * 45 - run_total_resets * 18, 0)
+	return clampi(run_total_score * 120 + run_levels_cleared * 45 - run_total_resets * 18, 0, MAX_TRACKED_VALUE)
+
+
+func _saturating_add(value: int, delta: int) -> int:
+	return clampi(value + delta, 0, MAX_TRACKED_VALUE)
 
 
 func _build_star_string(stars: int) -> String:
@@ -827,13 +855,30 @@ func _build_ui() -> void:
 	top_panel.add_child(top_content)
 
 	var top_row: HBoxContainer = HBoxContainer.new()
-	top_row.add_theme_constant_override("separation", 14)
+	top_row.add_theme_constant_override("separation", 12)
 	top_content.add_child(top_row)
+
+	var brand_row: HBoxContainer = HBoxContainer.new()
+	brand_row.add_theme_constant_override("separation", 10)
+	brand_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top_row.add_child(brand_row)
 
 	maze_label = Label.new()
 	maze_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	maze_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top_row.add_child(maze_label)
+	brand_row.add_child(maze_label)
+
+	hud_by_label = Label.new()
+	hud_by_label.text = "by"
+	hud_by_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	brand_row.add_child(hud_by_label)
+
+	hud_logo_rect = TextureRect.new()
+	hud_logo_rect.texture = _load_company_logo_texture()
+	hud_logo_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	hud_logo_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	hud_logo_rect.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	brand_row.add_child(hud_logo_rect)
 
 	pause_button = _make_button("||")
 	pause_button.custom_minimum_size = Vector2(round(88.0 * _get_ui_scale()), 0.0)
@@ -856,7 +901,6 @@ func _build_ui() -> void:
 	detail_row.add_child(timer_label)
 
 	invert_button = _make_button(_get_invert_button_text())
-	invert_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	invert_button.focus_mode = Control.FOCUS_NONE
 	invert_button.pressed.connect(_toggle_invert_colors)
 	detail_row.add_child(invert_button)
@@ -916,6 +960,10 @@ func _build_ui() -> void:
 
 	splash_retries_label = _make_splash_stat_label()
 	splash_content.add_child(splash_retries_label)
+
+	splash_best_label = _make_splash_stat_label()
+	splash_best_label.visible = false
+	splash_content.add_child(splash_best_label)
 
 	splash_stars_label = Label.new()
 	splash_stars_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1022,8 +1070,8 @@ func _handle_splash_retry() -> void:
 	if splash_mode != SplashMode.LEVEL_COMPLETE:
 		return
 
-	run_total_score = maxi(run_total_score - _calculate_star_rating(), 0)
-	run_levels_cleared = maxi(run_levels_cleared - 1, 0)
+	run_total_score = clampi(run_total_score - _calculate_star_rating(), 0, MAX_TRACKED_VALUE)
+	run_levels_cleared = clampi(run_levels_cleared - 1, 0, MAX_TRACKED_VALUE)
 	splash_mode = SplashMode.NONE
 	completed = false
 	_restart_level()
@@ -1095,6 +1143,7 @@ func _toggle_invert_colors() -> void:
 	invert_colors_enabled = not invert_colors_enabled
 	_apply_palette(level)
 	_update_ui()
+	_save_persistent_data()
 	if audio_controller != null:
 		audio_controller.play_invert()
 	queue_redraw()
@@ -1161,15 +1210,21 @@ func _sync_volume_controls() -> void:
 
 
 func _handle_music_volume_changed(value: float) -> void:
+	music_volume_setting = clampf(value, 0.0, 1.0)
 	if audio_controller == null:
+		_save_persistent_data()
 		return
-	audio_controller.set_music_volume(value)
+	audio_controller.set_music_volume(music_volume_setting)
+	_save_persistent_data()
 
 
 func _handle_sfx_volume_changed(value: float) -> void:
+	sfx_volume_setting = clampf(value, 0.0, 1.0)
 	if audio_controller == null:
+		_save_persistent_data()
 		return
-	audio_controller.set_sfx_volume(value)
+	audio_controller.set_sfx_volume(sfx_volume_setting)
+	_save_persistent_data()
 
 
 func _is_marker_intro_active() -> bool:
@@ -1395,6 +1450,8 @@ func _apply_palette_to_ui() -> void:
 
 	maze_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
 	maze_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	hud_by_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	hud_by_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	score_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
 	score_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	timer_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
@@ -1417,6 +1474,8 @@ func _apply_palette_to_ui() -> void:
 	splash_optimal_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	splash_retries_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
 	splash_retries_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+	splash_best_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
+	splash_best_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	splash_music_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
 	splash_music_label.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
 	splash_sfx_label.add_theme_color_override("font_color", BRIGHT_TEXT_COLOR)
@@ -1458,23 +1517,27 @@ func _refresh_ui_layout() -> void:
 
 func _apply_ui_metrics() -> void:
 	var scale: float = _get_ui_scale()
-	var header_size: int = int(round(52.0 * scale))
-	var detail_size: int = int(round(34.0 * scale))
-	var button_size: int = int(round(30.0 * scale))
+	var header_size: int = int(round(44.0 * scale))
+	var detail_size: int = int(round(30.0 * scale))
+	var button_size: int = int(round(27.0 * scale))
 	var splash_title_size: int = int(round(92.0 * scale))
 	var splash_stat_size: int = int(round(36.0 * scale))
 	var splash_star_size: int = int(round(92.0 * scale))
 	_apply_label_style(maze_label, header_size, 7, player_color)
 	maze_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_apply_label_style(hud_by_label, detail_size, 5, goal_color)
+	hud_by_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(score_label, header_size, 7, goal_color)
 	score_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_apply_label_style(timer_label, detail_size, 6, text_color)
 	timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hud_logo_rect.custom_minimum_size = Vector2(round(154.0 * scale), round(34.0 * scale))
 
 	_apply_label_style(splash_title_label, splash_title_size, 8, goal_color)
 	_apply_label_style(splash_score_label, splash_stat_size, 6, player_color)
 	_apply_label_style(splash_optimal_label, splash_stat_size, 6, start_color)
 	_apply_label_style(splash_retries_label, splash_stat_size, 6, text_color)
+	_apply_label_style(splash_best_label, splash_stat_size, 6, goal_color)
 	_apply_label_style(splash_music_label, splash_stat_size, 6, text_color)
 	_apply_label_style(splash_sfx_label, splash_stat_size, 6, text_color)
 	splash_logo_rect.custom_minimum_size = Vector2(0.0, round(220.0 * scale))
@@ -1514,6 +1577,11 @@ func _apply_button_style_metrics(button: Button, font_size: int) -> void:
 	button.add_theme_color_override("font_pressed_color", BRIGHT_TEXT_COLOR)
 	button.add_theme_color_override("font_focus_color", BRIGHT_TEXT_COLOR)
 	button.add_theme_color_override("font_outline_color", DARK_OUTLINE_COLOR)
+
+	if button == pause_button:
+		button.custom_minimum_size.x = round(72.0 * _get_ui_scale())
+	elif button == invert_button:
+		button.custom_minimum_size.x = round(162.0 * _get_ui_scale())
 
 
 func _apply_slider_palette(slider: HSlider) -> void:
@@ -1639,6 +1707,40 @@ func _make_button_focus_style(border_color: Color) -> StyleBoxFlat:
 	style.shadow_size = 14
 	style.shadow_offset = Vector2.ZERO
 	return style
+
+
+func _load_persistent_data() -> void:
+	var config: ConfigFile = ConfigFile.new()
+	if config.load(SAVE_FILE_PATH) != OK:
+		return
+	invert_colors_enabled = bool(config.get_value("settings", "invert_colors_enabled", false))
+	music_volume_setting = clampf(float(config.get_value("audio", "music_volume", 1.0)), 0.0, 1.0)
+	sfx_volume_setting = clampf(float(config.get_value("audio", "sfx_volume", 1.0)), 0.0, 1.0)
+	best_run_score = maxi(int(config.get_value("records", "best_run_score", 0)), 0)
+
+
+func _save_persistent_data() -> void:
+	var config: ConfigFile = ConfigFile.new()
+	config.set_value("settings", "invert_colors_enabled", invert_colors_enabled)
+	config.set_value("audio", "music_volume", music_volume_setting)
+	config.set_value("audio", "sfx_volume", sfx_volume_setting)
+	config.set_value("records", "best_run_score", best_run_score)
+	config.save(SAVE_FILE_PATH)
+
+
+func _apply_persistent_audio_settings() -> void:
+	if audio_controller == null:
+		return
+	audio_controller.set_music_volume(music_volume_setting)
+	audio_controller.set_sfx_volume(sfx_volume_setting)
+	_sync_volume_controls()
+
+
+func _remember_best_run_score(score: int) -> void:
+	if score <= best_run_score:
+		return
+	best_run_score = clampi(score, 0, MAX_TRACKED_VALUE)
+	_save_persistent_data()
 
 
 func _apply_button_palette(button: Button, normal_color: Color, hover_color: Color, pressed_color: Color) -> void:
@@ -1836,8 +1938,8 @@ func _draw_player_marker(center: Vector2, radius: float, pulse: float, cell_size
 	draw_circle(center, radius * 0.92, core_fill)
 	var text_rect: Rect2 = Rect2(center - Vector2.ONE * radius * 0.92, Vector2.ONE * radius * 1.84)
 	var total_text: String = str(player_total)
-	var text_scale_factor: float = 0.46 if total_text.length() <= 2 else (0.38 if total_text.length() == 3 else 0.31)
-	var text_size: int = clampi(int(round(cell_size * text_scale_factor)), 18, 52)
+	var text_scale_factor: float = minf(0.46, 1.42 / maxf(float(total_text.length()), 2.0))
+	var text_size: int = clampi(int(round(cell_size * text_scale_factor)), 12, 52)
 	_draw_centered_text(text_rect, total_text, text_size, BRIGHT_TEXT_COLOR, 4)
 
 
@@ -1902,18 +2004,25 @@ func _draw_tile_surface(rect: Rect2, fill_color: Color, line_width: float, is_av
 		var pulse: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
 		var inverted: Color = Color(1.0 - fill_color.r, 1.0 - fill_color.g, 1.0 - fill_color.b, fill_color.a)
 		display_color = fill_color.lerp(inverted, 0.38 + pulse * 0.62)
-	_draw_rounded_rect(Rect2(rect.position + shadow_offset, rect.size), _with_alpha(background_color, 0.36), corner_radius)
-	_draw_rounded_rect(rect, display_color.lightened(0.18), corner_radius)
+	var shell_color: Color = display_color.lightened(0.26)
+	var core_color: Color = display_color.darkened(0.36)
+	var face_color: Color = display_color.lightened(0.14)
+	_draw_rounded_rect(Rect2(rect.position + shadow_offset, rect.size), _with_alpha(background_color.darkened(0.14), 0.42), corner_radius)
+	_draw_rounded_rect(rect, shell_color, corner_radius)
 	var middle_rect: Rect2 = rect.grow(-line_width * 0.45)
 	var middle_radius: float = maxf(corner_radius - line_width * 0.85, 3.0)
-	_draw_rounded_rect(middle_rect, display_color.darkened(0.3), middle_radius)
+	_draw_rounded_rect(middle_rect, core_color, middle_radius)
 	var face_rect: Rect2 = middle_rect.grow(-line_width * 0.62)
 	var face_radius: float = maxf(middle_radius - line_width * 0.9, 2.0)
-	_draw_rounded_rect(face_rect, display_color.lightened(0.12), face_radius)
-	_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.16), face_radius)
-	_draw_rounded_rect_outline(face_rect, _with_alpha(Color.WHITE, 0.2), face_radius, maxf(1.0, line_width * 0.5))
-	_draw_rounded_rect_outline(middle_rect, _with_alpha(display_color.darkened(0.45), 0.36), middle_radius, maxf(1.0, line_width * 0.45))
-	_draw_rounded_rect_outline(rect, _with_alpha(grid_line_color, 0.55), corner_radius, maxf(1.0, line_width * 0.8))
+	_draw_rounded_rect(face_rect, face_color, face_radius)
+	var top_glow_rect: Rect2 = Rect2(face_rect.position + Vector2(0.0, face_rect.size.y * 0.02), Vector2(face_rect.size.x, face_rect.size.y * 0.46))
+	var bottom_shade_rect: Rect2 = Rect2(face_rect.position + Vector2(0.0, face_rect.size.y * 0.48), Vector2(face_rect.size.x, face_rect.size.y * 0.42))
+	_draw_rounded_rect(top_glow_rect, _with_alpha(shell_color.lightened(0.18), 0.22), face_radius)
+	_draw_rounded_rect(bottom_shade_rect, _with_alpha(core_color.darkened(0.12), 0.18), face_radius)
+	_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.17), face_radius)
+	_draw_rounded_rect_outline(face_rect, _with_alpha(Color.WHITE, 0.22), face_radius, maxf(1.0, line_width * 0.48))
+	_draw_rounded_rect_outline(middle_rect, _with_alpha(core_color.darkened(0.3), 0.46), middle_radius, maxf(1.0, line_width * 0.45))
+	_draw_rounded_rect_outline(rect, _with_alpha(shell_color.lightened(0.16), 0.62), corner_radius, maxf(1.0, line_width * 0.82))
 	if is_available:
 		var pulse_outline: float = 0.5 + 0.5 * sin(pulse_time * 2.2 + float(rect.position.x + rect.position.y) * 0.02)
 		_draw_corner_lights(face_rect, _with_alpha(Color.WHITE, 0.18 + pulse_outline * 0.08), face_radius)
@@ -1983,6 +2092,12 @@ func _get_text_outline_color(text_fill_color: Color) -> Color:
 	return outline_color
 
 
+func _get_best_score_text() -> String:
+	if best_run_score <= 0:
+		return "BEST SCORE --"
+	return "BEST SCORE %d" % best_run_score
+
+
 func _rebuild_tile_value_colors() -> void:
 	tile_value_colors.clear()
 	if cell_values.is_empty():
@@ -2004,9 +2119,9 @@ func _rebuild_tile_value_colors() -> void:
 
 	var hue_span: float = 0.88
 	var hue_start: float = 0.02
-	var saturation: float = 0.34 if invert_colors_enabled else 0.56
-	var brightness: float = 0.92 if invert_colors_enabled else 0.84
-	var mix_amount: float = 0.72 if invert_colors_enabled else 0.62
+	var saturation: float = 0.38 if invert_colors_enabled else 0.62
+	var brightness: float = 0.95 if invert_colors_enabled else 0.88
+	var mix_amount: float = 0.76 if invert_colors_enabled else 0.68
 
 	for index in range(unique_values.size()):
 		var ratio: float = 0.0 if unique_values.size() == 1 else float(index) / float(unique_values.size() - 1)

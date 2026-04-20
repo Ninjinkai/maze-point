@@ -1,0 +1,3 @@
+name: generator-balance
+description: Generation, solver, progression, and balance guidance for the puzzle core.
+prompt-file: .github/prompts/generator-balance.md

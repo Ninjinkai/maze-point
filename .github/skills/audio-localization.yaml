@@ -1,0 +1,3 @@
+name: audio-localization
+description: Procedural audio, localization, and related persistence guidance.
+prompt-file: .github/prompts/audio-localization.md

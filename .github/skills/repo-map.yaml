@@ -1,0 +1,3 @@
+name: repo-map
+description: Fast component map for Maze Point so agents only load the files they need.
+prompt-file: .github/prompts/repo-map.md

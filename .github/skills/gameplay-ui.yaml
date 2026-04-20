@@ -1,0 +1,3 @@
+name: gameplay-ui
+description: Gameplay/UI ownership boundaries and file guidance for title flow, HUD, menus, rendering, and input.
+prompt-file: .github/prompts/gameplay-ui.md

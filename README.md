@@ -75,6 +75,17 @@ Run the lightweight headless helper-suite with:
 godot --headless --path . --script res://tests/test_runner.gd
 ```
 
+## Copilot agents and skills
+
+Repository-local Copilot scaffolding lives under `.github/`:
+
+- `.github/agents/` — component agents for gameplay/UI, generator/balance, audio/localization, validation/release, plus an orchestrator
+- `.github/skills/` — reusable repo-map, validation, and component-scope skills
+- `.github/prompts/` — prompt content backing the skills
+- `.github/workflows/copilot-setup-steps.yml` — cloud-agent setup that installs Godot 4.6.2 before work begins
+
+Use the orchestrator first for broad requests, then route to the narrowest component agent that matches the change.
+
 ## Desktop builds
 
 Desktop export presets are included for:

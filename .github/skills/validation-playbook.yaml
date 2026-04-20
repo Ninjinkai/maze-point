@@ -1,0 +1,3 @@
+name: validation-playbook
+description: Shared validation checklist for Maze Point changes.
+prompt-file: .github/prompts/validation-playbook.md

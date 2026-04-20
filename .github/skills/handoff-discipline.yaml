@@ -1,0 +1,3 @@
+name: handoff-discipline
+description: Rules for delegating between component agents while keeping context small.
+prompt-file: .github/prompts/handoff-discipline.md

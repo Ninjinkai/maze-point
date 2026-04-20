@@ -5,10 +5,12 @@ const TEST_SCRIPTS: Array[Script] = [
 	preload("res://tests/test_input.gd"),
 	preload("res://tests/test_generator.gd"),
 	preload("res://tests/test_generator_metrics.gd"),
+	preload("res://tests/test_localization.gd"),
 	preload("res://tests/test_playfield_utils.gd"),
 	preload("res://tests/test_audio_math.gd"),
 	preload("res://tests/test_audio_music_style.gd"),
 	preload("res://tests/test_audio_stream_factory.gd"),
+	preload("res://tests/test_ui_styles.gd"),
 ]
 
 

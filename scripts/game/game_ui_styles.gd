@@ -17,13 +17,18 @@ static func build_multilingual_font() -> Font:
 		"Hiragino Kaku Gothic ProN",
 		"Yu Gothic",
 		"PingFang SC",
+		"PingFang TC",
 		"Heiti SC",
+		"STHeiti",
+		"Songti SC",
 		"Apple SD Gothic Neo",
 		"Noto Sans CJK JP",
 		"Noto Sans CJK SC",
+		"Noto Sans CJK TC",
 		"Noto Sans CJK KR",
 		"Noto Sans JP",
 		"Noto Sans SC",
+		"Noto Sans TC",
 		"Noto Sans KR",
 		"Noto Sans Arabic",
 		"Noto Sans Devanagari",
@@ -36,8 +41,12 @@ static func build_multilingual_font() -> Font:
 	return system_font
 
 
+static func uses_multilingual_font(language_code: String) -> bool:
+	return language_code != "en"
+
+
 static func get_active_font(language_code: String, primary_font: Font, multilingual_font: Font) -> Font:
-	if language_code in ["zh_CN", "hi", "ar", "ja", "ko"]:
+	if uses_multilingual_font(language_code):
 		return multilingual_font if multilingual_font != null else ThemeDB.fallback_font
 	return primary_font if primary_font != null else ThemeDB.fallback_font
 

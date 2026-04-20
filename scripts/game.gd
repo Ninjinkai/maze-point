@@ -1427,6 +1427,7 @@ func _set_language(next_language_code: String) -> void:
 	language_code = normalized_code
 	_refresh_ui_layout()
 	_refresh_localized_text()
+	_apply_ui_metrics()
 	match splash_mode:
 		TypesScript.SplashMode.TITLE:
 			if title_loading_active:

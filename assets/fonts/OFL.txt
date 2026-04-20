@@ -1,4 +1,6 @@
 Copyright 2016 The Fredoka Project Authors (https://github.com/hafontia/Fredoka-One)
+This project also bundles Noto Sans CJK SC Regular from the Noto CJK project.
+Copyright 2014-2021 Adobe (http://www.adobe.com/). Noto is a trademark of Google Inc.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

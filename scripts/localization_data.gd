@@ -352,3 +352,16 @@ static func get_language_name(language_code: String) -> String:
 		if String(entry.get("code", "")) == language_code:
 			return String(entry.get("name", language_code))
 	return language_code
+
+
+static func get_language_code_by_offset(language_code: String, offset: int) -> String:
+	if LANGUAGES.is_empty():
+		return DEFAULT_LANGUAGE
+	var current_index: int = 0
+	for index in range(LANGUAGES.size()):
+		var entry: Dictionary = LANGUAGES[index]
+		if String(entry.get("code", "")) == language_code:
+			current_index = index
+			break
+	var next_entry: Dictionary = LANGUAGES[posmod(current_index + offset, LANGUAGES.size())]
+	return String(next_entry.get("code", DEFAULT_LANGUAGE))

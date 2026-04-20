@@ -29,6 +29,18 @@ func run() -> Dictionary:
 	if LocalizationScript.get_text("zh_CN", "BUILDING_RUN") != "正在生成新一轮":
 		failures.append("Chinese run-building text should remain intact")
 
+	assertions += 1
+	if LocalizationScript.get_language_code_by_offset("en", 1) != "zh_CN":
+		failures.append("language cycling should advance to the next locale")
+
+	assertions += 1
+	if LocalizationScript.get_language_code_by_offset("zh_CN", -1) != "en":
+		failures.append("language cycling should move backward to the previous locale")
+
+	assertions += 1
+	if LocalizationScript.get_language_code_by_offset("en", -1) != "ko":
+		failures.append("language cycling should wrap backward from the first locale")
+
 	for entry_variant in LocalizationScript.get_languages():
 		var entry: Dictionary = entry_variant
 		var code: String = String(entry.get("code", ""))

@@ -11,6 +11,7 @@ const PlayfieldUtilsScript = preload("res://scripts/game/game_playfield_utils.gd
 const UiStylesScript = preload("res://scripts/game/game_ui_styles.gd")
 const RendererScript = preload("res://scripts/game/game_renderer.gd")
 const COMPANY_LOGO_PATH := "res://assets/branding/SlopwAIr_logo_vector.png"
+const CJK_FALLBACK_FONT_PATH := "res://assets/fonts/NotoSansCJKsc-Regular.otf"
 const SAVE_FILE_PATH := "user://maze_point_settings.cfg"
 const MAX_TRACKED_VALUE := 999999999
 
@@ -149,6 +150,7 @@ var advance_timer: Timer
 var loading_timer: Timer
 var ui_font: Font
 var multilingual_ui_font: Font
+var cjk_fallback_ui_font: Font
 var company_logo_texture: Texture2D
 var audio_controller
 var renderer := RendererScript.new()
@@ -1404,19 +1406,8 @@ func _sync_volume_controls() -> void:
 		splash_sfx_slider.set_value_no_signal(audio_controller.get_sfx_volume())
 
 
-func _cycle_language() -> void:
-	var languages: Array = LocalizationScript.get_languages()
-	if languages.is_empty():
-		return
-	var current_index: int = 0
-	for index in range(languages.size()):
-		var entry: Dictionary = languages[index]
-		if String(entry.get("code", "")) == language_code:
-			current_index = index
-			break
-	var next_index: int = posmod(current_index + 1, languages.size())
-	var next_entry: Dictionary = languages[next_index]
-	_set_language(String(next_entry.get("code", LocalizationScript.DEFAULT_LANGUAGE)))
+func _cycle_language(step: int = 1) -> void:
+	_set_language(LocalizationScript.get_language_code_by_offset(language_code, step))
 
 
 func _set_language(next_language_code: String) -> void:
@@ -1854,7 +1845,11 @@ func _get_outer_margin() -> float:
 
 func _load_ui_font() -> void:
 	ui_font = UiStylesScript.load_primary_font("res://assets/fonts/Fredoka.ttf")
-	multilingual_ui_font = UiStylesScript.build_multilingual_font()
+	var multilingual_fallbacks: Array[Font] = []
+	cjk_fallback_ui_font = UiStylesScript.load_font_or_null(CJK_FALLBACK_FONT_PATH)
+	if cjk_fallback_ui_font != null:
+		multilingual_fallbacks.append(cjk_fallback_ui_font)
+	multilingual_ui_font = UiStylesScript.build_multilingual_font(multilingual_fallbacks)
 
 
 func _get_active_ui_font() -> Font:
@@ -1949,6 +1944,11 @@ func _move_menu_focus(direction: Vector2i) -> void:
 
 	if menu_focus_index >= 0 and menu_focus_index < controls.size() and direction.x != 0:
 		var focused_control: Control = controls[menu_focus_index]
+		if focused_control == splash_language_button:
+			_cycle_language(direction.x)
+			if audio_controller != null:
+				audio_controller.play_menu_move()
+			return
 		if focused_control is HSlider:
 			_adjust_focused_slider(focused_control, direction.x)
 			return

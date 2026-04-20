@@ -1,17 +1,23 @@
 extends RefCounted
 class_name MazePointUiStyles
 
-static func load_primary_font(font_path: String) -> Font:
+static func load_font_or_null(font_path: String) -> Font:
 	var font_bytes: PackedByteArray = FileAccess.get_file_as_bytes(font_path)
 	if font_bytes.is_empty():
-		return ThemeDB.fallback_font
+		return null
 	var font_file: FontFile = FontFile.new()
 	font_file.data = font_bytes
 	return font_file
 
 
-static func build_multilingual_font() -> Font:
+static func load_primary_font(font_path: String) -> Font:
+	var font: Font = load_font_or_null(font_path)
+	return font if font != null else ThemeDB.fallback_font
+
+
+static func build_multilingual_font(fallback_fonts: Array[Font] = []) -> Font:
 	var system_font: SystemFont = SystemFont.new()
+	var valid_fallbacks: Array[Font] = []
 	system_font.font_names = PackedStringArray([
 		"Hiragino Sans",
 		"Hiragino Kaku Gothic ProN",
@@ -38,6 +44,12 @@ static func build_multilingual_font() -> Font:
 		"Malgun Gothic",
 		"Segoe UI",
 	])
+	system_font.allow_system_fallback = true
+	for fallback_font in fallback_fonts:
+		if fallback_font != null:
+			valid_fallbacks.append(fallback_font)
+	if not valid_fallbacks.is_empty():
+		system_font.fallbacks = valid_fallbacks
 	return system_font
 
 

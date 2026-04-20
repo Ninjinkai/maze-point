@@ -1412,8 +1412,11 @@ func _cycle_language(step: int = 1) -> void:
 
 func _set_language(next_language_code: String) -> void:
 	var normalized_code: String = next_language_code if LocalizationScript.has_language(next_language_code) else LocalizationScript.DEFAULT_LANGUAGE
+	var preserve_language_focus: bool = splash_language_button != null and splash_language_button.has_focus()
 	if language_code == normalized_code and splash_language_button != null:
 		splash_language_button.text = _get_language_button_text()
+		if preserve_language_focus:
+			_restore_menu_focus(splash_language_button)
 		return
 	language_code = normalized_code
 	_refresh_ui_layout()
@@ -1435,6 +1438,8 @@ func _set_language(next_language_code: String) -> void:
 			_show_run_complete_splash()
 		_:
 			_update_ui()
+	if preserve_language_focus:
+		_restore_menu_focus(splash_language_button)
 	_save_persistent_data()
 	queue_redraw()
 
@@ -2004,6 +2009,17 @@ func _get_active_menu_controls() -> Array[Control]:
 func _set_menu_focus_from_control(control: Control) -> void:
 	var controls: Array[Control] = _get_active_menu_controls()
 	menu_focus_index = controls.find(control)
+
+
+func _restore_menu_focus(control: Control) -> void:
+	if control == null or not control.visible:
+		return
+	var controls: Array[Control] = _get_active_menu_controls()
+	var control_index: int = controls.find(control)
+	if control_index < 0:
+		return
+	menu_focus_index = control_index
+	control.grab_focus()
 
 
 func _adjust_focused_slider(slider: HSlider, horizontal_direction: int) -> void:

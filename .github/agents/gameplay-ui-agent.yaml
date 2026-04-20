@@ -18,4 +18,6 @@ prompt: |
   - title/pause/run-over flows
   - HUD layout and styling consistency
   - playfield geometry, rendering, animation, and input
+  - menu navigation behavior, focus retention, and directional control semantics
+  - preserving the currently focused control when splash screens rebuild after settings changes
   - preserving existing generator/audio contracts unless the task explicitly requires cross-component work

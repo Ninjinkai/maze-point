@@ -18,3 +18,4 @@ prompt: |
   - growing the lightweight test runner with pure-logic coverage
   - maintaining Copilot setup steps for cloud sessions
   - documenting the minimum commands needed to validate work
+  - keeping commits free of accidental Godot-generated `.uid` and unrelated `.import` churn unless a task intentionally updates those artifacts

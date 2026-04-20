@@ -11,6 +11,7 @@ Typical tasks:
 - title screen, loading transitions, pause flow, run-over flow
 - HUD structure, fonts, layout, sizing, button styling
 - playfield rendering, animation timing, touch/keyboard/gamepad behavior
+- menu navigation semantics, focus retention, and per-control left/right behavior
 - visual polish that should not alter puzzle generation or audio logic
 
 When editing:
@@ -18,3 +19,5 @@ When editing:
 1. Preserve existing generator/audio interfaces unless the task explicitly crosses those domains.
 2. Prefer extracting new pure helpers into `scripts/game/` rather than growing `scripts/game.gd`.
 3. If a render helper already exists in `game_renderer.gd`, extend it there instead of duplicating draw logic in the coordinator.
+4. When a settings change rebuilds a splash screen, preserve the active control if the user expects to keep adjusting that same widget.
+5. Language selector behavior is not a generic button: Enter/click may cycle it, but left/right navigation should keep the selector focused while changing options.

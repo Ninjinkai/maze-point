@@ -12,10 +12,14 @@ prompt: |
   - scripts/audio/**
   - scripts/localization_data.gd
   - scripts/game/game_persistence.gd
+  - scripts/game/game_ui_styles.gd
+  - assets/fonts/**
   - tests/test_audio*.gd
 
   Focus on:
   - procedural music and SFX composition structure
   - localization data quality and language coverage
+  - deterministic glyph coverage across supported locales, including bundled fallback fonts when system fonts are not reliable
   - settings persistence for audio/language concerns
   - keeping pure helpers extracted and testable
+  - handing off to gameplay-ui-agent when locale changes also alter splash-menu focus, left/right cycling, or button ordering

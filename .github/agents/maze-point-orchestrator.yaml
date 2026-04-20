@@ -17,4 +17,7 @@ prompt: |
   - Do not load the whole repo when one component area is enough.
   - Prefer handoff to one specialist agent instead of keeping broad context in the coordinator.
   - Pull in a second component only when a change truly crosses boundaries.
+  - Treat localization/font work as cross-component when it touches both `scripts/localization_data.gd` or `scripts/game/game_ui_styles.gd` and menu behavior in `scripts/game.gd`.
+  - Route menu focus retention, left/right language cycling, and splash-control ordering to gameplay-ui-agent even when the visible bug is language-related.
+  - Route glyph coverage, bundled fallback fonts, locale metadata, and persistence of language settings to audio-localization-agent.
   - Always finish with the validation-playbook skill.

@@ -40,6 +40,7 @@ Rules:
 - **Invert colors:** `I` or gamepad `X`
 - **Pause menu:** `Esc` or gamepad `Start`
 - **Title and pause controls:** both menus include separate music and SFX volume sliders, and both let you cycle the active language.
+- **Language selector controls:** `Enter`, click, or tap cycles the focused language selector, while keyboard/gamepad left-right changes the language in place without kicking focus back to the first menu button.
 - **Saved preferences:** language, music volume, SFX volume, and color inversion persist between launches.
 - **Menu navigation:** arrow keys or gamepad **D-pad**
 
@@ -57,6 +58,7 @@ All music and sound effects are generated in code at runtime.
 
 - Maze Point includes built-in UI localization for English, Simplified Chinese, Hindi, Spanish, Arabic, French, Brazilian Portuguese, German, Japanese, and Korean.
 - Language selection is available from the title screen before a run starts and again from the pause menu mid-run.
+- Non-English UI text uses the multilingual font path, with a bundled Simplified Chinese fallback font so CJK coverage does not depend only on the host OS.
 
 ## Running locally
 
@@ -85,6 +87,7 @@ Repository-local Copilot scaffolding lives under `.github/`:
 - `.github/workflows/copilot-setup-steps.yml` — cloud-agent setup that installs Godot 4.6.2 before work begins
 
 Use the orchestrator first for broad requests, then route to the narrowest component agent that matches the change.
+The current guidance also captures recent lessons around deterministic CJK font fallback, language-selector left/right behavior, splash-menu focus retention, and filtering out accidental Godot-generated validation churn.
 
 ## Desktop builds
 
